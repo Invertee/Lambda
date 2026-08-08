@@ -2,6 +2,7 @@ name: Lambda
 version: "1.0.0"
 slug: lambda
 description: A private, block-based library for notes and reusable script snippets.
+url: https://github.com/Invertee/Lambda
 startup: application
 boot: auto
 init: false
