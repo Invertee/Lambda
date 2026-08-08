@@ -1,0 +1,9 @@
+configuration:
+  password:
+    name: App password
+    description: The password used to unlock Lambda. Change the default before exposing the app.
+  session_days:
+    name: Session length
+    description: Number of inactive days before a browser must sign in again.
+network:
+  8099/tcp: Direct web access for use with a reverse proxy.

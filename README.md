@@ -89,4 +89,3 @@ For a consistent manual backup, stop the add-on and copy `snippet.db` together w
 ## Version behavior
 
 A snapshot is captured before the first change in an editing session. Long-running sessions rotate to a new snapshot window after five minutes. Restoring a version first snapshots the current note, and only the newest 20 snapshots are retained.
-# Lambda

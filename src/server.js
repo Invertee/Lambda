@@ -1,0 +1,396 @@
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { apiKeyMatches, AuthManager } from './auth.js';
+import { loadConfig } from './config.js';
+import { SnippetDatabase } from './database.js';
+import { MCP_PROTOCOL_VERSION, processMcpMessage } from './mcp.js';
+import { ValidationError, validateBackup, validateCategoryName, validateNote } from './validation.js';
+
+const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+const MAX_BODY_BYTES = 12 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const MIME_TYPES = {
+  '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.webmanifest': 'application/manifest+json',
+};
+
+function securityHeaders() {
+  return {
+    'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'",
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'SAMEORIGIN',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+  };
+}
+
+function json(response, status, value, headers = {}) {
+  response.writeHead(status, {
+    ...securityHeaders(),
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    ...headers,
+  });
+  response.end(JSON.stringify(value));
+}
+
+function empty(response, status = 204, headers = {}) {
+  response.writeHead(status, { ...securityHeaders(), 'Cache-Control': 'no-store', ...headers });
+  response.end();
+}
+
+async function readBody(request, limit = MAX_BODY_BYTES) {
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > limit) {
+      const error = new Error('Request body is too large.');
+      error.statusCode = 413;
+      throw error;
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function readJson(request) {
+  const body = await readBody(request);
+  if (!body.length) return {};
+  try {
+    return JSON.parse(body.toString('utf8'));
+  } catch {
+    const error = new Error('Request body must be valid JSON.');
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
+async function readJsonObject(request) {
+  const body = await readJson(request);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    const error = new Error('Request body must be a JSON object.');
+    error.statusCode = 400;
+    throw error;
+  }
+  return body;
+}
+
+function downloadFilename(value) {
+  const cleaned = String(value || 'attachment').replace(/[\r\n]/g, '').slice(0, 255) || 'attachment';
+  const ascii = cleaned.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(cleaned)}`;
+}
+
+function serveFile(response, filename) {
+  const extension = path.extname(filename).toLowerCase();
+  try {
+    const contents = fs.readFileSync(filename);
+    response.writeHead(200, {
+      ...securityHeaders(),
+      'Content-Type': MIME_TYPES[extension] || 'application/octet-stream',
+      'Cache-Control': extension === '.html' || extension === '.webmanifest'
+        ? 'no-cache'
+        : 'public, max-age=3600',
+    });
+    response.end(contents);
+  } catch {
+    json(response, 404, { error: 'Not found.' });
+  }
+}
+
+function staticFilename(pathname) {
+  const relative = pathname === '/' ? 'index.html' : decodeURIComponent(pathname).replace(/^\/+/, '');
+  const resolved = path.resolve(PUBLIC_DIR, relative);
+  return resolved.startsWith(`${PUBLIC_DIR}${path.sep}`) || resolved === path.join(PUBLIC_DIR, 'index.html')
+    ? resolved
+    : null;
+}
+
+export function createApp(customConfig = {}) {
+  const config = { ...loadConfig(), ...customConfig };
+  const database = customConfig.database || new SnippetDatabase(config.dbPath);
+  const auth = new AuthManager(config.password, config.sessionDays, database.sessions);
+
+  const server = http.createServer(async (request, response) => {
+    const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+    const pathname = url.pathname.replace(/\/$/, '') || '/';
+
+    try {
+      if (pathname === '/health' && request.method === 'GET') {
+        return json(response, 200, { status: 'ok' });
+      }
+
+      if (pathname === '/mcp') {
+        if (!config.apiKey) {
+          return json(response, 503, { error: 'MCP is disabled until an API key is configured.' });
+        }
+        if (!apiKeyMatches(request, config.apiKey)) {
+          return json(response, 401, { error: 'A valid API key is required.' }, {
+            'WWW-Authenticate': 'Bearer realm="Lambda MCP"',
+          });
+        }
+        if (request.method !== 'POST') {
+          return json(response, 405, { error: 'Use POST for this stateless MCP endpoint.' }, { Allow: 'POST' });
+        }
+        const message = await readJson(request);
+        const protocolVersion = String(request.headers['mcp-protocol-version'] || '');
+        if (protocolVersion && ![MCP_PROTOCOL_VERSION, '2025-11-25', '2025-06-18', '2025-03-26'].includes(protocolVersion)) {
+          return json(response, 400, { error: `Unsupported MCP protocol version: ${protocolVersion}` });
+        }
+        if (protocolVersion === MCP_PROTOCOL_VERSION) {
+          if (request.headers['mcp-method'] !== message.method) {
+            return json(response, 400, { error: 'The Mcp-Method header must match the JSON-RPC method.' });
+          }
+          if (message.method === 'tools/call' && request.headers['mcp-name'] !== message.params?.name) {
+            return json(response, 400, { error: 'The Mcp-Name header must match the requested tool.' });
+          }
+        }
+        const processed = processMcpMessage(database, message);
+        return processed.body === null
+          ? empty(response, processed.status)
+          : json(response, processed.status, processed.body);
+      }
+
+      if (pathname === '/api/auth/status' && request.method === 'GET') {
+        const token = auth.authenticate(request);
+        return json(response, 200, { authenticated: Boolean(token) }, token ? {
+          'Set-Cookie': auth.cookie(token, request, config.cookieSecure),
+        } : {});
+      }
+
+      if (pathname === '/api/auth/login' && request.method === 'POST') {
+        if (!auth.canAttempt(request)) {
+          return json(response, 429, { error: 'Too many attempts. Try again in a few minutes.' });
+        }
+        const body = await readJsonObject(request);
+        if (!auth.passwordMatches(body.password || '')) {
+          auth.recordFailure(request);
+          return json(response, 401, { error: 'That password is not correct.' });
+        }
+        auth.clearFailures(request);
+        const token = auth.createSession();
+        return json(response, 200, { authenticated: true }, {
+          'Set-Cookie': auth.cookie(token, request, config.cookieSecure),
+        });
+      }
+
+      if (pathname === '/api/auth/logout' && request.method === 'POST') {
+        auth.destroySession(request);
+        return empty(response, 204, {
+          'Set-Cookie': auth.expiredCookie(request, config.cookieSecure),
+        });
+      }
+
+      const sessionToken = pathname.startsWith('/api/') ? auth.authenticate(request) : null;
+      if (pathname.startsWith('/api/') && !sessionToken && !apiKeyMatches(request, config.apiKey)) {
+        return json(response, 401, { error: 'Authentication required.' }, {
+          'WWW-Authenticate': 'Bearer realm="Lambda API"',
+        });
+      }
+      if (sessionToken) {
+        response.setHeader('Set-Cookie', auth.cookie(sessionToken, request, config.cookieSecure));
+      }
+
+      if (pathname === '/api/bootstrap' && request.method === 'GET') {
+        return json(response, 200, {
+          notes: database.listNotes(),
+          trash: database.listNotes({ deleted: true }),
+          categories: database.listCategories(),
+          cachedAt: new Date().toISOString(),
+        });
+      }
+
+      if (pathname === '/api/backup' && request.method === 'GET') {
+        const date = new Date().toISOString().slice(0, 10);
+        return json(response, 200, database.exportBackup(), {
+          'Content-Disposition': downloadFilename(`lambda-backup-${date}.json`),
+        });
+      }
+
+      if (pathname === '/api/backup' && request.method === 'PUT') {
+        const backup = validateBackup(await readJsonObject(request));
+        return json(response, 200, database.restoreBackup(backup));
+      }
+
+      if (pathname === '/api/attachments' && request.method === 'POST') {
+        const declaredSize = Number(request.headers['content-length'] || 0);
+        if (declaredSize > MAX_ATTACHMENT_BYTES) {
+          const error = new Error('Attachments must be 25 MB or smaller.');
+          error.statusCode = 413;
+          throw error;
+        }
+        let name;
+        try {
+          name = decodeURIComponent(String(request.headers['x-file-name'] || 'attachment'));
+        } catch {
+          const error = new Error('Attachment name is invalid.');
+          error.statusCode = 400;
+          throw error;
+        }
+        name = name.trim();
+        if (!name || name.length > 255 || /[\r\n]/.test(name)) {
+          const error = new Error('Attachment name is invalid.');
+          error.statusCode = 400;
+          throw error;
+        }
+        const contents = await readBody(request, MAX_ATTACHMENT_BYTES);
+        const id = randomUUID();
+        fs.mkdirSync(config.attachmentDir, { recursive: true });
+        fs.writeFileSync(path.join(config.attachmentDir, id), contents, { flag: 'wx' });
+        return json(response, 201, {
+          id,
+          name,
+          size: contents.length,
+          mime: String(request.headers['content-type'] || 'application/octet-stream').slice(0, 120),
+        });
+      }
+
+      const attachmentMatch = pathname.match(/^\/api\/attachments\/([a-f0-9-]{36})$/i);
+      if (attachmentMatch && request.method === 'GET') {
+        const filename = path.join(config.attachmentDir, attachmentMatch[1].toLowerCase());
+        if (!fs.existsSync(filename) || !fs.statSync(filename).isFile()) {
+          return json(response, 404, { error: 'Attachment not found.' });
+        }
+        response.writeHead(200, {
+          ...securityHeaders(),
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': fs.statSync(filename).size,
+          'Content-Disposition': downloadFilename(url.searchParams.get('name')),
+          'Cache-Control': 'private, max-age=3600',
+        });
+        return fs.createReadStream(filename).pipe(response);
+      }
+
+      if (pathname === '/api/notes' && request.method === 'GET') {
+        return json(response, 200, database.listNotes({
+          deleted: url.searchParams.get('trash') === '1',
+          category: url.searchParams.get('category') || '',
+          tag: url.searchParams.get('tag') || '',
+          search: url.searchParams.get('q') || '',
+        }));
+      }
+
+      if (pathname === '/api/notes' && request.method === 'POST') {
+        const note = validateNote(await readJson(request));
+        return json(response, 201, database.createNote(note));
+      }
+
+      if (pathname === '/api/categories' && request.method === 'GET') {
+        return json(response, 200, database.listCategories());
+      }
+
+      if (pathname === '/api/categories' && request.method === 'POST') {
+        const body = await readJsonObject(request);
+        return json(response, 201, database.createCategory(validateCategoryName(body.name)));
+      }
+
+      const categoryMatch = pathname.match(/^\/api\/categories\/(\d+)$/);
+      if (categoryMatch && request.method === 'PATCH') {
+        const body = await readJsonObject(request);
+        const category = database.renameCategory(Number(categoryMatch[1]), validateCategoryName(body.name));
+        return category
+          ? json(response, 200, category)
+          : json(response, 404, { error: 'Category not found.' });
+      }
+      if (categoryMatch && request.method === 'DELETE') {
+        return database.deleteCategory(Number(categoryMatch[1]))
+          ? empty(response)
+          : json(response, 404, { error: 'Category not found.' });
+      }
+
+      const versionMatch = pathname.match(/^\/api\/notes\/([a-f0-9-]+)\/versions(?:\/(\d+)\/restore)?$/i);
+      if (versionMatch && request.method === 'GET' && !versionMatch[2]) {
+        if (!database.getNote(versionMatch[1])) return json(response, 404, { error: 'Note not found.' });
+        return json(response, 200, database.listVersions(versionMatch[1]));
+      }
+      if (versionMatch && request.method === 'POST' && versionMatch[2]) {
+        const restored = database.restoreVersion(versionMatch[1], Number(versionMatch[2]));
+        return restored
+          ? json(response, 200, restored)
+          : json(response, 404, { error: 'Note or version not found.' });
+      }
+
+      const actionMatch = pathname.match(/^\/api\/notes\/([a-f0-9-]+)\/(restore|permanent)$/i);
+      if (actionMatch && actionMatch[2] === 'restore' && request.method === 'POST') {
+        return database.restoreNote(actionMatch[1])
+          ? json(response, 200, database.getNote(actionMatch[1]))
+          : json(response, 404, { error: 'Deleted note not found.' });
+      }
+      if (actionMatch && actionMatch[2] === 'permanent' && request.method === 'DELETE') {
+        return database.permanentlyDelete(actionMatch[1])
+          ? empty(response)
+          : json(response, 404, { error: 'Deleted note not found.' });
+      }
+
+      const noteMatch = pathname.match(/^\/api\/notes\/([a-f0-9-]+)$/i);
+      if (noteMatch && request.method === 'GET') {
+        const note = database.getNote(noteMatch[1]);
+        return note ? json(response, 200, note) : json(response, 404, { error: 'Note not found.' });
+      }
+      if (noteMatch && request.method === 'PUT') {
+        const note = database.updateNote(noteMatch[1], validateNote(await readJson(request), { partial: true }));
+        return note ? json(response, 200, note) : json(response, 404, { error: 'Active note not found.' });
+      }
+      if (noteMatch && request.method === 'PATCH') {
+        const current = database.getNote(noteMatch[1]);
+        if (!current || current.deletedAt) return json(response, 404, { error: 'Active note not found.' });
+        const body = await readJsonObject(request);
+        const has = (key) => Object.hasOwn(body, key);
+        const note = database.updateNote(noteMatch[1], validateNote({
+          title: has('title') ? body.title : current.title,
+          category: has('category') ? body.category : current.category,
+          tags: has('tags') ? body.tags : current.tags,
+          blocks: has('blocks') ? body.blocks : current.blocks,
+          versionToken: has('versionToken') ? body.versionToken : randomUUID(),
+        }));
+        return json(response, 200, note);
+      }
+      if (noteMatch && request.method === 'DELETE') {
+        return database.softDelete(noteMatch[1])
+          ? empty(response)
+          : json(response, 404, { error: 'Active note not found.' });
+      }
+
+      if (pathname.startsWith('/api/')) return json(response, 404, { error: 'Not found.' });
+      if (!['GET', 'HEAD'].includes(request.method)) return json(response, 405, { error: 'Method not allowed.' });
+
+      const filename = staticFilename(pathname);
+      if (filename && fs.existsSync(filename) && fs.statSync(filename).isFile()) return serveFile(response, filename);
+      return serveFile(response, path.join(PUBLIC_DIR, 'index.html'));
+    } catch (error) {
+      const status = error instanceof ValidationError ? 400 : (error.statusCode || 500);
+      if (status === 500) console.error(error);
+      return json(response, status, { error: status === 500 ? 'An unexpected error occurred.' : error.message });
+    }
+  });
+
+  return {
+    server,
+    database,
+    listen: () => new Promise((resolve) => server.listen(config.port, config.host, resolve)),
+    close: () => new Promise((resolve, reject) => server.close((error) => {
+      if (customConfig.database) return error ? reject(error) : resolve();
+      database.close();
+      return error ? reject(error) : resolve();
+    })),
+    config,
+  };
+}
+
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+if (isMain) {
+  const app = createApp();
+  await app.listen();
+  console.log(`Lambda is listening on http://${app.config.host}:${app.config.port}`);
+  if (app.config.password === 'changeme') {
+    console.warn('WARNING: Using the default password. Set APP_PASSWORD or configure the add-on password.');
+  }
+}

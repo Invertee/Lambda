@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#ff6a00">
+  <meta name="description" content="A private home for notes and reusable script snippets.">
+  <title>Lambda</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png" type="image/png" sizes="192x192">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="login-view" class="login-view hidden">
+    <main class="login-card">
+      <div class="brand-mark brand-mark-large" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><path d="M8 6h2.5c1.8 0 2.8 1 3.6 3l6.4 17M15.3 12.2 9.5 26"/></svg>
+      </div>
+      <p class="eyebrow">YOUR PRIVATE LIBRARY</p>
+      <h1>Welcome to Lambda</h1>
+      <p class="login-copy">Your notes, scripts and useful fragments—all in one quiet place.</p>
+      <form id="login-form">
+        <label for="password">Password</label>
+        <div class="password-field">
+          <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+          <button id="toggle-password" class="icon-button" type="button" aria-label="Show password">
+            <svg viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></svg>
+          </button>
+        </div>
+        <p id="login-error" class="form-error" role="alert"></p>
+        <button class="primary-button login-button" type="submit">Unlock Lambda</button>
+      </form>
+      <p class="secure-note"><span></span> Stored on your own server</p>
+    </main>
+  </div>
+
+  <div id="app-shell" class="app-shell hidden">
+    <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+    <aside id="sidebar" class="sidebar">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32"><path d="M8 6h2.5c1.8 0 2.8 1 3.6 3l6.4 17M15.3 12.2 9.5 26"/></svg>
+        </div>
+        <div><strong>Lambda</strong></div>
+        <button id="close-sidebar" class="icon-button sidebar-close" aria-label="Close navigation">
+          <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+
+      <button id="new-note" class="primary-button new-note-button">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        New note
+        <kbd>N</kbd>
+      </button>
+
+      <label class="search-box" for="search">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+        <input id="search" type="search" placeholder="Search everything…" autocomplete="off">
+        <kbd>/</kbd>
+      </label>
+
+      <div class="sidebar-scroll">
+        <nav class="filter-nav" aria-label="Note filters">
+          <button class="nav-item active" data-filter="all">
+            <span><svg viewBox="0 0 24 24"><path d="M6 3.5h9l4 4v13H6z"/><path d="M15 3.5v4h4M9 12h7M9 16h7"/></svg>All notes</span>
+            <span id="all-count" class="count">0</span>
+          </button>
+        </nav>
+
+        <div class="nav-section-heading">
+          <span>Categories</span>
+          <button id="manage-categories" class="icon-button small" aria-label="Manage categories">
+            <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </div>
+        <nav id="categories-list" class="filter-nav" aria-label="Categories"></nav>
+
+        <div id="tag-section" class="tag-section hidden">
+          <div class="nav-section-heading"><span>Tags</span></div>
+          <div id="tag-list" class="sidebar-tags"></div>
+        </div>
+
+        <div class="nav-section-heading note-list-heading"><span id="note-list-label">Recent notes</span></div>
+        <div id="note-list" class="note-list"></div>
+      </div>
+
+      <div class="sidebar-footer">
+        <button id="settings-nav" class="nav-item">
+          <span><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>Settings</span>
+        </button>
+        <button id="trash-nav" class="nav-item">
+          <span><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"/></svg>Recycle bin</span>
+          <span id="trash-count" class="count">0</span>
+        </button>
+        <div class="connection-row">
+          <svg id="connection-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+          <span id="connection-text">Synced</span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <div class="mobile-bar">
+        <button id="open-sidebar" class="icon-button" aria-label="Open navigation">
+          <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+        <span>Lambda</span>
+        <button id="mobile-new-note" class="icon-button" aria-label="New note">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+
+      <div id="offline-banner" class="offline-banner hidden">
+        You’re offline. Showing the last synced copy in read-only mode.
+      </div>
+
+      <section id="empty-state" class="empty-state">
+        <div class="empty-illustration" aria-hidden="true">
+          <svg viewBox="0 0 120 120"><path d="M31 19h45l18 18v64H31z"/><path d="M76 19v19h18M44 54h36M44 66h29M44 78h33"/><circle cx="92" cy="91" r="18"/><path d="M92 83v16M84 91h16"/></svg>
+        </div>
+        <p class="eyebrow">A CLEAR PLACE TO THINK</p>
+        <h1>Your library starts here</h1>
+        <p>Create a note, save a command, or collect the fragments you always need again.</p>
+        <button id="empty-new-note" class="primary-button">Create your first note</button>
+      </section>
+
+      <section id="library-view" class="library-view hidden" aria-label="Notes library">
+        <header class="page-header library-header">
+          <p id="library-eyebrow" class="eyebrow">LIBRARY</p>
+          <h1 id="library-title">All notes</h1>
+          <p id="library-summary">Browse and select a note to open it.</p>
+        </header>
+        <div id="library-table-wrap" class="library-table-wrap">
+          <table class="library-table">
+            <thead>
+              <tr>
+                <th scope="col">Note</th>
+                <th scope="col">Category</th>
+                <th scope="col">Tags</th>
+                <th scope="col">Updated</th>
+              </tr>
+            </thead>
+            <tbody id="library-table-body"></tbody>
+          </table>
+        </div>
+        <div id="library-empty" class="empty-list hidden"></div>
+      </section>
+
+      <section id="note-editor" class="note-editor hidden" aria-label="Note editor">
+        <header class="editor-header">
+          <div class="editor-actions">
+            <div id="save-status" class="save-status"><span></span>Saved</div>
+            <button id="versions-button" class="secondary-button">
+              <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.6M4 4v4.6h4.6"/><path d="M12 8v4l3 2"/></svg>
+              History
+            </button>
+            <button id="delete-note" class="icon-button danger-hover" aria-label="Move note to recycle bin">
+              <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"/></svg>
+            </button>
+          </div>
+          <input id="note-title" class="note-title" maxlength="200" placeholder="Untitled note" aria-label="Note title">
+          <div class="note-meta">
+            <label class="meta-field">
+              <svg viewBox="0 0 24 24"><path d="M3.5 6.5h6l2 2h9v11h-17z"/></svg>
+              <select id="note-category" aria-label="Category" required></select>
+            </label>
+            <label class="meta-field tags-field">
+              <svg viewBox="0 0 24 24"><path d="M4 5h7l9 9-6 6-10-10z"/><circle cx="8" cy="9" r="1"/></svg>
+              <input id="note-tags" maxlength="500" placeholder="Add tags, separated by commas" aria-label="Tags">
+            </label>
+          </div>
+          <div id="block-adder" class="block-adder">
+            <span>Add block</span>
+            <button data-add-block="text"><svg viewBox="0 0 24 24"><path d="M5 6h14M5 10h14M5 14h10M5 18h12"/></svg>Text</button>
+            <button data-add-block="heading"><svg viewBox="0 0 24 24"><path d="M5 5v14M15 5v14M5 12h10M18 9h2v10"/></svg>Heading</button>
+            <button data-add-block="code"><svg viewBox="0 0 24 24"><path d="m9 7-5 5 5 5M15 7l5 5-5 5M13 4l-2 16"/></svg>Code</button>
+            <button data-add-block="image"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="16" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="m5 17 4-4 3 3 2-2 5 5"/></svg>Image</button>
+            <button data-add-block="file"><svg viewBox="0 0 24 24"><path d="m9 12 5.5-5.5a3 3 0 0 1 4.2 4.2l-7.8 7.8a5 5 0 0 1-7.1-7.1l7.5-7.5"/></svg>File</button>
+          </div>
+        </header>
+
+        <div id="blocks" class="blocks"></div>
+      </section>
+
+      <section id="trash-view" class="trash-view hidden">
+        <header class="page-header">
+          <p class="eyebrow">RECYCLE BIN</p>
+          <h1>Recently deleted</h1>
+          <p>Restore notes to your library or remove them permanently.</p>
+        </header>
+        <div id="trash-list" class="trash-list"></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="versions-dialog" class="modal">
+    <div class="modal-header">
+      <div><p class="eyebrow">VERSION HISTORY</p><h2>Earlier versions</h2></div>
+      <button class="icon-button" data-close-dialog aria-label="Close">
+        <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <p class="modal-intro">Lambda keeps up to 20 editing snapshots for this note.</p>
+    <div id="versions-list" class="versions-list"></div>
+  </dialog>
+
+  <dialog id="new-note-dialog" class="modal new-note-modal">
+    <div class="modal-header">
+      <div><p class="eyebrow">NEW NOTE</p><h2>Choose a category</h2></div>
+      <button class="icon-button" data-close-dialog aria-label="Close">
+        <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <p class="modal-intro">Every note in Lambda belongs to a category.</p>
+    <form id="new-note-form" class="new-note-form">
+      <label for="new-note-category">Category</label>
+      <select id="new-note-category" required></select>
+      <button class="primary-button" type="submit">Create note</button>
+    </form>
+  </dialog>
+
+  <dialog id="categories-dialog" class="modal categories-modal">
+    <div class="modal-header">
+      <div><p class="eyebrow">ORGANISE</p><h2>Categories</h2></div>
+      <button class="icon-button" data-close-dialog aria-label="Close">
+        <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <form id="category-form" class="inline-form">
+      <input id="category-name" maxlength="80" placeholder="New category name" required>
+      <button class="primary-button" type="submit">Add</button>
+    </form>
+    <div id="category-manager-list" class="category-manager-list"></div>
+  </dialog>
+
+  <dialog id="settings-dialog" class="modal settings-modal">
+    <div class="modal-header">
+      <div><p class="eyebrow">PREFERENCES</p><h2>Settings</h2></div>
+      <button class="icon-button" data-close-dialog aria-label="Close">
+        <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <p class="modal-intro">Manage your Lambda data.</p>
+    <div class="settings-row">
+      <div class="settings-row-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 4v11m-4-4 4 4 4-4M5 20h14"/></svg>
+      </div>
+      <div class="settings-row-text">
+        <strong>Backup your data</strong>
+        <span>Export all notes, recycled notes, categories, tags and version history as JSON.</span>
+      </div>
+      <button id="export-backup" class="primary-button" type="button">Export backup</button>
+    </div>
+    <div class="settings-row">
+      <div class="settings-row-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 20V9m-4 4 4-4 4 4M5 4h14"/></svg>
+      </div>
+      <div class="settings-row-text">
+        <strong>Restore your data</strong>
+        <span>Import a Lambda backup. This replaces all current notes, recycled notes, categories, tags and version history.</span>
+      </div>
+      <button id="import-backup" class="secondary-button" type="button">Import backup</button>
+    </div>
+  </dialog>
+
+  <dialog id="confirm-dialog" class="modal confirm-modal">
+    <div class="confirm-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"/></svg></div>
+    <h2 id="confirm-title">Delete note?</h2>
+    <p id="confirm-message"></p>
+    <div class="confirm-actions">
+      <button id="confirm-cancel" class="secondary-button">Cancel</button>
+      <button id="confirm-accept" class="danger-button">Delete</button>
+    </div>
+  </dialog>
+
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+  <input id="image-picker" class="hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
+  <input id="file-picker" class="hidden" type="file">
+  <input id="backup-picker" class="hidden" type="file" accept="application/json,.json">
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "lambda-notes",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Lambda, a self-hosted block-based notes and script library.",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}
