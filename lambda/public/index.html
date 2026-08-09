@@ -217,8 +217,10 @@
     </div>
     <p class="modal-intro">Every note in Lambda belongs to a category.</p>
     <form id="new-note-form" class="new-note-form">
-      <label for="new-note-category">Category</label>
-      <select id="new-note-category" required></select>
+      <fieldset>
+        <legend>Category</legend>
+        <div id="new-note-categories" class="category-checkbox-list"></div>
+      </fieldset>
       <button class="primary-button" type="submit">Create note</button>
     </form>
   </dialog>
@@ -245,6 +247,16 @@
       </button>
     </div>
     <p class="modal-intro">Manage your Lambda data.</p>
+    <div class="settings-row">
+      <div class="settings-row-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M3.5 6.5h6l2 2h9v11h-17z"/></svg>
+      </div>
+      <div class="settings-row-text">
+        <strong>Manage categories</strong>
+        <span>Add, rename or remove categories used to organise your notes.</span>
+      </div>
+      <button id="settings-categories" class="secondary-button" type="button">Manage</button>
+    </div>
     <div class="settings-row">
       <div class="settings-row-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24"><path d="M12 4v11m-4-4 4 4 4-4M5 20h14"/></svg>

@@ -261,6 +261,7 @@ function updateConnectionUi() {
   $('#mobile-new-note').disabled = state.offline;
   $('#empty-new-note').disabled = state.offline;
   $('#manage-categories').disabled = state.offline;
+  $('#settings-categories').disabled = state.offline;
   $('#export-backup').disabled = state.offline;
   $('#import-backup').disabled = state.offline;
   if (state.currentNote) setEditorDisabled(state.offline);
@@ -721,17 +722,26 @@ function showNewNoteDialog() {
     setTimeout(() => $('#category-name').focus(), 0);
     return;
   }
-  const select = $('#new-note-category');
-  select.replaceChildren(...state.categories.map((category) => {
-    const option = document.createElement('option');
-    option.value = category.name;
-    option.textContent = category.name;
-    return option;
-  }));
   const preferred = state.filter.type === 'category' ? state.filter.value : state.currentNote?.category;
-  if (state.categories.some((category) => category.name === preferred)) select.value = preferred;
+  const selected = state.categories.some((category) => category.name === preferred)
+    ? preferred
+    : state.categories[0].name;
+  const list = $('#new-note-categories');
+  list.replaceChildren(...state.categories.map((category) => {
+    const label = document.createElement('label');
+    label.className = 'category-checkbox';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.name = 'new-note-category';
+    checkbox.value = category.name;
+    checkbox.checked = category.name === selected;
+    const text = document.createElement('span');
+    text.textContent = category.name;
+    label.append(checkbox, text);
+    return label;
+  }));
   $('#new-note-dialog').showModal();
-  setTimeout(() => select.focus(), 0);
+  setTimeout(() => $('input:checked', list)?.focus(), 0);
 }
 
 async function createNote(category) {
@@ -1038,10 +1048,76 @@ function renderCategoryManager() {
     remove.className = 'icon-button danger-hover';
     remove.dataset.deleteCategory = category.id;
     remove.title = 'Delete category';
+    remove.setAttribute('aria-label', `Delete ${category.name}`);
     remove.innerHTML = icons.trash;
-    item.append(name, count, remove);
+    const rename = document.createElement('button');
+    rename.type = 'button';
+    rename.className = 'icon-button';
+    rename.dataset.renameCategory = category.id;
+    rename.title = 'Rename category';
+    rename.setAttribute('aria-label', `Rename ${category.name}`);
+    rename.innerHTML = '<svg viewBox="0 0 24 24"><path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10zM14 7l3 3"/></svg>';
+    item.append(name, count, rename, remove);
     return item;
   }));
+}
+
+function showCategoryRename(id) {
+  const category = state.categories.find((item) => item.id === id);
+  const item = $(`[data-rename-category="${id}"]`)?.closest('.category-manager-item');
+  if (!category || !item) return;
+  const form = document.createElement('form');
+  form.className = 'category-rename-form';
+  form.dataset.renameCategoryForm = id;
+  const input = document.createElement('input');
+  input.value = category.name;
+  input.maxLength = 80;
+  input.required = true;
+  input.setAttribute('aria-label', 'Category name');
+  const save = document.createElement('button');
+  save.type = 'submit';
+  save.className = 'primary-button';
+  save.textContent = 'Save';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'secondary-button';
+  cancel.dataset.cancelCategoryRename = '';
+  cancel.textContent = 'Cancel';
+  form.append(input, save, cancel);
+  item.replaceChildren(form);
+  input.focus();
+  input.select();
+}
+
+async function renameCategory(id, name) {
+  const category = state.categories.find((item) => item.id === id);
+  const cleaned = name.trim();
+  if (!category || !cleaned) return;
+  if (cleaned === category.name) return renderCategoryManager();
+  if (await saveNow() === false) return;
+  try {
+    const renamed = await api(`categories/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: cleaned }),
+    });
+    const oldName = category.name;
+    category.name = renamed.name;
+    state.categories.sort((a, b) => a.name.localeCompare(b.name));
+    [state.notes, state.trash].forEach((notes) => notes.forEach((note) => {
+      if (note.category === oldName) note.category = renamed.name;
+    }));
+    if (state.currentNote?.category === oldName) state.currentNote.category = renamed.name;
+    if (state.filter.type === 'category' && state.filter.value === oldName) state.filter.value = renamed.name;
+    renderCategoryManager();
+    renderCategoryOptions();
+    renderSidebar();
+    if (state.view === 'library') renderLibrary();
+    if (state.view === 'trash') renderTrash();
+    await cacheSnapshot();
+    toast('Category renamed.');
+  } catch (error) {
+    toast(error.message, 'error');
+  }
 }
 
 async function addCategory(name) {
@@ -1171,6 +1247,12 @@ function wireEvents() {
   $('#settings-nav').addEventListener('click', () => {
     closeSidebar();
     $('#settings-dialog').showModal();
+  });
+  $('#settings-categories').addEventListener('click', () => {
+    $('#settings-dialog').close();
+    renderCategoryManager();
+    $('#categories-dialog').showModal();
+    setTimeout(() => $('#category-name').focus(), 0);
   });
   $('#export-backup').addEventListener('click', downloadBackup);
   $('#import-backup').addEventListener('click', () => $('#backup-picker').click());
@@ -1380,7 +1462,11 @@ function wireEvents() {
     event.preventDefault();
     const button = $('button[type="submit"]', event.currentTarget);
     button.disabled = true;
-    const category = $('#new-note-category').value;
+    const category = $('input[name="new-note-category"]:checked', event.currentTarget)?.value;
+    if (!category) {
+      button.disabled = false;
+      return toast('Choose a category.', 'error');
+    }
     try {
       if (await createNote(category)) $('#new-note-dialog').close();
     } finally {
@@ -1388,8 +1474,27 @@ function wireEvents() {
     }
   });
   $('#category-manager-list').addEventListener('click', (event) => {
-    const button = event.target.closest('[data-delete-category]');
-    if (button) deleteCategory(Number(button.dataset.deleteCategory));
+    const remove = event.target.closest('[data-delete-category]');
+    const rename = event.target.closest('[data-rename-category]');
+    const cancel = event.target.closest('[data-cancel-category-rename]');
+    if (remove) deleteCategory(Number(remove.dataset.deleteCategory));
+    else if (rename) showCategoryRename(Number(rename.dataset.renameCategory));
+    else if (cancel) renderCategoryManager();
+  });
+  $('#category-manager-list').addEventListener('submit', (event) => {
+    const form = event.target.closest('[data-rename-category-form]');
+    if (!form) return;
+    event.preventDefault();
+    renameCategory(Number(form.dataset.renameCategoryForm), $('input', form).value);
+  });
+  $('#new-note-categories').addEventListener('change', (event) => {
+    if (!event.target.checked) {
+      event.target.checked = true;
+      return;
+    }
+    $$('input[type="checkbox"]', event.currentTarget).forEach((checkbox) => {
+      if (checkbox !== event.target) checkbox.checked = false;
+    });
   });
 
   $$('[data-close-dialog]').forEach((button) => button.addEventListener('click', () => button.closest('dialog').close()));
