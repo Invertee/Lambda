@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { apiKeyMatches, AuthManager } from './auth.js';
 import { loadConfig } from './config.js';
 import { SnippetDatabase } from './database.js';
+import { EncryptionVault } from './encryption.js';
 import { MCP_PROTOCOL_VERSION, processMcpMessage } from './mcp.js';
 import { ValidationError, validateBackup, validateCategoryName, validateNote } from './validation.js';
 
@@ -116,7 +117,10 @@ function staticFilename(pathname) {
 
 export function createApp(customConfig = {}) {
   const config = { ...loadConfig(), ...customConfig };
-  const database = customConfig.database || new SnippetDatabase(config.dbPath);
+  const encryptionKeyPath = customConfig.encryptionKeyPath
+    || (config.dbPath === ':memory:' ? '' : `${config.dbPath}.encryption.json`);
+  const encryption = customConfig.encryption || new EncryptionVault(config.password, encryptionKeyPath);
+  const database = customConfig.database || new SnippetDatabase(config.dbPath, encryption);
   const auth = new AuthManager(config.password, config.sessionDays, database.sessions);
 
   const server = http.createServer(async (request, response) => {
@@ -243,8 +247,9 @@ export function createApp(customConfig = {}) {
         }
         const contents = await readBody(request, MAX_ATTACHMENT_BYTES);
         const id = randomUUID();
+        const encrypted = encryption.encryptBytes(contents, `lambda:attachment:${id}:v1`);
         fs.mkdirSync(config.attachmentDir, { recursive: true });
-        fs.writeFileSync(path.join(config.attachmentDir, id), contents, { flag: 'wx' });
+        fs.writeFileSync(path.join(config.attachmentDir, id), encrypted, { flag: 'wx', mode: 0o600 });
         return json(response, 201, {
           id,
           name,
@@ -255,18 +260,20 @@ export function createApp(customConfig = {}) {
 
       const attachmentMatch = pathname.match(/^\/api\/attachments\/([a-f0-9-]{36})$/i);
       if (attachmentMatch && request.method === 'GET') {
-        const filename = path.join(config.attachmentDir, attachmentMatch[1].toLowerCase());
+        const id = attachmentMatch[1].toLowerCase();
+        const filename = path.join(config.attachmentDir, id);
         if (!fs.existsSync(filename) || !fs.statSync(filename).isFile()) {
           return json(response, 404, { error: 'Attachment not found.' });
         }
+        const contents = encryption.decryptBytes(fs.readFileSync(filename), `lambda:attachment:${id}:v1`);
         response.writeHead(200, {
           ...securityHeaders(),
           'Content-Type': 'application/octet-stream',
-          'Content-Length': fs.statSync(filename).size,
+          'Content-Length': contents.length,
           'Content-Disposition': downloadFilename(url.searchParams.get('name')),
           'Cache-Control': 'private, max-age=3600',
         });
-        return fs.createReadStream(filename).pipe(response);
+        return response.end(contents);
       }
 
       if (pathname === '/api/notes' && request.method === 'GET') {
