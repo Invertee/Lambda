@@ -5,6 +5,7 @@ Lambda is a small, self-hosted notes and script library designed to run as a Hom
 ## Highlights
 
 - Single-user password authentication with rate limiting and secure, HTTP-only cookies that expire after 30 days of inactivity by default
+- AES-256-GCM encryption at rest for note titles, block content, version content, and attachments
 - Text, heading, code, compressed image, and disk-backed file-attachment blocks
 - Drag, button-based reorder, remove, and one-click code copying or downloading
 - A language picker for code blocks, defaulting to PowerShell
@@ -26,6 +27,16 @@ npm start
 ```
 
 Open `http://localhost:8099`. The local database is created at `data/snippet.db`, with uploaded files in `data/attachments`. Optional environment variables are `PORT`, `HOST`, `DB_PATH`, `ATTACHMENTS_PATH`, `COOKIE_SECURE`, `SESSION_DAYS`, and `API_KEY`.
+
+## Encryption at rest
+
+Lambda creates a random 256-bit data-encryption key on first start. That key is wrapped with a key derived from the configured app password using scrypt and stored beside the database as `snippet.db.encryption.json`. Note titles, note blocks, version titles, version blocks, and attachment file contents are encrypted with AES-256-GCM before being written to disk. Each encrypted value uses a fresh nonce and authenticated associated data tied to its record.
+
+Categories, tags, record IDs, timestamps, session metadata, and other structural database information remain plaintext so filtering, indexing, and automation continue to work normally. REST, MCP, and PowerShell/API clients receive decrypted data from the running Lambda service and require no encryption changes.
+
+The encryption metadata file contains the salt and wrapped data key, not the plaintext key. Keep `snippet.db`, `snippet.db.encryption.json`, and the `attachments` directory together when backing up the app. The configured app password is required to unwrap the data key after restart; changing or losing that password without first rewrapping the key will make the encrypted data inaccessible.
+
+The browser's IndexedDB offline snapshot and manually exported Lambda JSON backups remain plaintext on the device where they are created.
 
 ## Automation API
 
@@ -78,13 +89,13 @@ Its tools are `list_notes`, `get_note`, `create_note`, `update_note`, `delete_no
 
 Add `https://github.com/Invertee/Lambda` as a repository in the Home Assistant app store, then install **Lambda**. Before starting it, set a password in the Configuration tab.
 
-The SQLite database is written to `/config/snippet.db` inside the container and attachments are stored beside it in `/config/attachments`. The `addon_config` mapping exposes that as the add-on's own directory under Home Assistant's `addon_configs` storage. Both are included with add-on backups.
+The SQLite database is written to `/config/snippet.db` inside the container and attachments are stored beside it in `/config/attachments`. The wrapped encryption key metadata is written to `/config/snippet.db.encryption.json`. The `addon_config` mapping exposes that directory under Home Assistant's `addon_configs` storage, so all three are included with app backups.
 
-The add-on supports Home Assistant Ingress and also publishes port `8099` for a separate reverse proxy. Keep TLS termination at the proxy and forward `X-Forwarded-Proto`; Lambda will add the `Secure` flag to its session cookie when that header is `https`.
+The app supports Home Assistant Ingress and also publishes port `8099` for a separate reverse proxy. Keep TLS termination at the proxy and forward `X-Forwarded-Proto`; Lambda will add the `Secure` flag to its session cookie when that header is `https`.
 
 ## Backups
 
-For a consistent manual backup, stop the add-on and copy `snippet.db` together with the `attachments` folder. Home Assistant add-on backups include the mapped add-on configuration directory. SQLite WAL files may be present while the app is running.
+For a consistent manual backup, stop the app and copy `snippet.db`, `snippet.db.encryption.json`, and the `attachments` folder together. Home Assistant app backups include the mapped app configuration directory. SQLite WAL files may be present while the app is running.
 
 ## Version behavior
 
