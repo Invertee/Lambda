@@ -118,7 +118,7 @@ function staticFilename(pathname) {
 export function createApp(customConfig = {}) {
   const config = { ...loadConfig(), ...customConfig };
   const encryptionKeyPath = customConfig.encryptionKeyPath
-    || (config.dbPath === ':memory:' ? '' : `${config.dbPath}.encryption.json`);
+    || (customConfig.database || config.dbPath === ':memory:' ? '' : `${config.dbPath}.encryption.json`);
   const encryption = customConfig.encryption || new EncryptionVault(config.password, encryptionKeyPath);
   const database = customConfig.database || new SnippetDatabase(config.dbPath, encryption);
   const auth = new AuthManager(config.password, config.sessionDays, database.sessions);
