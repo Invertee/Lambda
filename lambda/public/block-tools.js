@@ -68,6 +68,13 @@ function offline() {
   return !document.querySelector('#offline-banner')?.classList.contains('hidden');
 }
 
+function updateCsvDisabledState(card) {
+  const disabled = offline();
+  card.querySelectorAll('.csv-editor-table input, [data-csv-edit]').forEach((element) => {
+    element.disabled = disabled;
+  });
+}
+
 function syncSource(card, rows) {
   const source = card.querySelector('[data-csv-source]');
   if (!source) return;
@@ -91,7 +98,8 @@ function renderTable(card, rows) {
       input.value = value;
       input.disabled = offline();
       input.setAttribute('aria-label', `Row ${rowIndex + 1}, column ${columnIndex + 1}`);
-      input.addEventListener('input', () => {
+      input.addEventListener('input', (event) => {
+        event.stopPropagation();
         rows[rowIndex][columnIndex] = input.value;
         syncSource(card, rows);
       });
@@ -104,8 +112,22 @@ function renderTable(card, rows) {
   holder.replaceChildren(table);
 }
 
+function editingButton(label, action) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'secondary-button';
+  button.dataset.csvEdit = '';
+  button.textContent = label;
+  button.disabled = offline();
+  button.addEventListener('click', action);
+  return button;
+}
+
 function enhanceCsv(card, block) {
-  if (card.dataset.csvEnhanced === '1') return;
+  if (card.dataset.csvEnhanced === '1') {
+    updateCsvDisabledState(card);
+    return;
+  }
   card.dataset.csvEnhanced = '1';
   card.classList.add('csv-block');
   const rows = parseCsv(block.content || '');
@@ -116,46 +138,26 @@ function enhanceCsv(card, block) {
   const label = document.createElement('strong');
   label.textContent = 'CSV table';
 
-  const addRow = document.createElement('button');
-  addRow.type = 'button';
-  addRow.className = 'secondary-button';
-  addRow.textContent = 'Add row';
-  addRow.disabled = offline();
-  addRow.addEventListener('click', () => {
+  const addRow = editingButton('Add row', () => {
     rows.push(Array(rows[0]?.length || 1).fill(''));
     renderTable(card, rows);
     syncSource(card, rows);
   });
 
-  const addColumn = document.createElement('button');
-  addColumn.type = 'button';
-  addColumn.className = 'secondary-button';
-  addColumn.textContent = 'Add column';
-  addColumn.disabled = offline();
-  addColumn.addEventListener('click', () => {
+  const addColumn = editingButton('Add column', () => {
     rows.forEach((row) => row.push(''));
     renderTable(card, rows);
     syncSource(card, rows);
   });
 
-  const removeRow = document.createElement('button');
-  removeRow.type = 'button';
-  removeRow.className = 'secondary-button';
-  removeRow.textContent = 'Remove row';
-  removeRow.disabled = offline();
-  removeRow.addEventListener('click', () => {
+  const removeRow = editingButton('Remove row', () => {
     if (rows.length <= 1) return;
     rows.pop();
     renderTable(card, rows);
     syncSource(card, rows);
   });
 
-  const removeColumn = document.createElement('button');
-  removeColumn.type = 'button';
-  removeColumn.className = 'secondary-button';
-  removeColumn.textContent = 'Remove column';
-  removeColumn.disabled = offline();
-  removeColumn.addEventListener('click', () => {
+  const removeColumn = editingButton('Remove column', () => {
     if ((rows[0]?.length || 1) <= 1) return;
     rows.forEach((row) => row.pop());
     renderTable(card, rows);
@@ -185,6 +187,7 @@ function enhanceCsv(card, block) {
   card.insertBefore(tableHolder, controls || null);
   card.insertBefore(source, controls || null);
   renderTable(card, rows);
+  updateCsvDisabledState(card);
 }
 
 function addCodeBadge(card, block) {
