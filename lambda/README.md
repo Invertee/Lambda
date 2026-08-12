@@ -1,15 +1,17 @@
 # Lambda
 
-Lambda is a small, self-hosted notes and script library designed to run as a Home Assistant add-on. Notes are assembled from text, heading, code, image, and file-attachment blocks. They autosave continuously and are organised with one-level categories and tags.
+Lambda is a small, self-hosted notes and script library designed to run as a Home Assistant add-on. Notes are assembled from text, heading, code, CSV table, image, and file-attachment blocks. They autosave continuously and are organised with one-level categories and tags.
 
 ## Highlights
 
 - Single-user password authentication with rate limiting and secure, HTTP-only cookies that expire after 30 days of inactivity by default
 - AES-256-GCM encryption at rest for note titles, block content, version content, and attachments
-- Text, heading, code, compressed image, and disk-backed file-attachment blocks
+- Stable five-character alphanumeric codes on every block for direct REST, MCP, and script access
+- Text, heading, code, editable CSV table, compressed image, and disk-backed file-attachment blocks
+- CSV tables can be edited in the web interface and downloaded as standard `.csv` files
 - Drag, button-based reorder, remove, and one-click code copying or downloading
 - A language picker for code blocks, defaulting to PowerShell
-- Search across titles, content, languages, categories, and tags
+- Search across titles, content, block codes, languages, categories, and tags
 - A browsable table for all notes, category views, tag views, and search results
 - Recycle bin plus a rolling 20-snapshot version history per note
 - REST and MCP automation interfaces protected by a separate static API key
@@ -32,11 +34,31 @@ Open `http://localhost:8099`. The local database is created at `data/snippet.db`
 
 Lambda creates a random 256-bit data-encryption key on first start. That key is wrapped with a key derived from the configured app password using scrypt and stored beside the database as `snippet.db.encryption.json`. Note titles, note blocks, version titles, version blocks, and attachment file contents are encrypted with AES-256-GCM before being written to disk. Each encrypted value uses a fresh nonce and authenticated associated data tied to its record.
 
-Categories, tags, record IDs, timestamps, session metadata, and other structural database information remain plaintext so filtering, indexing, and automation continue to work normally. REST, MCP, and PowerShell/API clients receive decrypted data from the running Lambda service and require no encryption changes.
+Categories, tags, record IDs, timestamps, block codes, session metadata, and other structural database information remain plaintext so filtering, indexing, and automation continue to work normally. REST, MCP, and PowerShell/API clients receive decrypted data from the running Lambda service and require no encryption changes.
 
 The encryption metadata file contains the salt and wrapped data key, not the plaintext key. Keep `snippet.db`, `snippet.db.encryption.json`, and the `attachments` directory together when backing up the app. The configured app password is required to unwrap the data key after restart; changing or losing that password without first rewrapping the key will make the encrypted data inaccessible.
 
 The browser's IndexedDB offline snapshot and manually exported Lambda JSON backups remain plaintext on the device where they are created.
+
+## Block codes
+
+Every block receives a globally unique five-character uppercase alphanumeric code such as `A1B2C`. The code is assigned by the server, returned as the block's `code` property, displayed in the web editor, and can be copied with one click.
+
+A code stays attached to the same block when its content changes or when the block is reordered. Codes are retained as tombstones when blocks are removed so they are not reassigned to a different block. Blocks inside notes in the recycle bin are unavailable through the block API; restoring the note reactivates the original codes.
+
+This makes a block a stable automation target without requiring the note UUID or block UUID.
+
+## CSV table blocks
+
+A `csv` block stores standard CSV text in its `content` field. In the web interface Lambda renders that content as an editable table with controls to add or remove rows and columns and download the current data as a CSV file. CSV content remains compatible with the normal REST and MCP interfaces, so scripts can write or retrieve it without any browser-specific format.
+
+For example, a block may contain:
+
+```csv
+Name,Status
+Spooler,Running
+W32Time,Stopped
+```
 
 ## Automation API
 
@@ -50,9 +72,12 @@ The main REST operations are:
 - `PATCH /api/notes/:id` — update only the supplied `title`, `category`, `tags`, or `blocks`
 - `PUT /api/notes/:id` — replace a complete note
 - `DELETE /api/notes/:id` — move a note to the recycle bin
+- `GET /api/blocks/:code` — retrieve one active block by its five-character code
+- `PATCH|PUT /api/blocks/:code` — update a block by code using JSON
+- `PUT /api/blocks/:code` with `Content-Type: text/csv` — replace a block with CSV data and make it a table block
 - `GET|POST /api/categories`, `PATCH|DELETE /api/categories/:id` — manage categories
 
-A note payload uses an ordered block list:
+A note payload uses an ordered block list. Codes are server-assigned, so they can be omitted when creating new blocks:
 
 ```json
 {
@@ -60,30 +85,78 @@ A note payload uses an ordered block list:
   "category": "PowerShell",
   "tags": ["windows", "services"],
   "blocks": [
-    { "type": "code", "language": "powershell", "content": "Restart-Service Spooler" }
+    { "type": "code", "language": "powershell", "content": "Restart-Service Spooler" },
+    { "type": "csv", "content": "Name,Status\nSpooler,Running" }
   ]
+}
+```
+
+A block lookup returns its note context and the complete block:
+
+```json
+{
+  "code": "A1B2C",
+  "noteId": "...",
+  "noteTitle": "Service state",
+  "block": {
+    "id": "...",
+    "code": "A1B2C",
+    "type": "csv",
+    "content": "Name,Status\nSpooler,Running"
+  }
 }
 ```
 
 ### PowerShell helper
 
-Dot-source the bundled helper, set the endpoint and key once, then pipe or pass content into `New-LambdaNote`:
+Dot-source the bundled helper and set the endpoint and API key once:
 
 ```powershell
 . ./tools/Lambda.ps1
 $env:LAMBDA_URL = 'https://notes.example.com'
 $env:LAMBDA_API_KEY = 'replace-with-your-random-key'
+```
 
+Create a normal code note:
+
+```powershell
 New-LambdaNote -Title 'Restart service' -Category 'PowerShell' `
   -Tags admin,windows -BlockType code -Language powershell `
   -Content 'Restart-Service Spooler'
+```
+
+Pipe PowerShell objects directly into a new CSV table block:
+
+```powershell
+Get-Service | Select-Object Name, Status | New-LambdaNote `
+  -Title 'Service snapshot' -Category 'Diagnostics' -BlockType csv
+```
+
+Replace an existing block with command output:
+
+```powershell
+Get-Content .\latest-output.txt | Set-LambdaBlock -Code A1B2C
+```
+
+Pipe structured PowerShell objects into an existing CSV table block:
+
+```powershell
+Get-Process | Select-Object Name, Id, CPU | Set-LambdaBlock -Code C3D4E -AsCsv
+```
+
+Retrieve a block or convert a CSV block back into PowerShell objects:
+
+```powershell
+Get-LambdaBlock -Code A1B2C
+Get-LambdaBlock -Code C3D4E -ContentOnly
+Get-LambdaBlock -Code C3D4E -AsTable
 ```
 
 ## MCP endpoint
 
 The stateless Streamable HTTP endpoint is `POST /mcp`. Configure an MCP client with that URL and an `Authorization: Bearer <key>` header. The server supports the current `2026-07-28` protocol and the legacy initialize flow used by `2025-11-25`, `2025-06-18`, and `2025-03-26` clients.
 
-Its tools are `list_notes`, `get_note`, `create_note`, `update_note`, `delete_note`, `restore_note`, `list_categories`, `create_category`, `rename_category`, and `delete_category`. Deletes are recoverable: the MCP interface deliberately moves notes to the recycle bin and does not expose permanent deletion.
+Its tools are `list_notes`, `get_note`, `get_block`, `update_block`, `create_note`, `update_note`, `delete_note`, `restore_note`, `list_categories`, `create_category`, `rename_category`, and `delete_category`. `get_block` and `update_block` address a block directly with its five-character code; CSV data is passed as standard CSV text in `content`. Deletes are recoverable: the MCP interface deliberately moves notes to the recycle bin and does not expose permanent deletion.
 
 ## Home Assistant app
 
