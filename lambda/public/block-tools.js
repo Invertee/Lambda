@@ -234,6 +234,7 @@ function addCodeBadge(card, block) {
 }
 
 function enhanceCards() {
+  let missing = false;
   document.querySelectorAll('#blocks [data-block-id]').forEach((card) => {
     let block = blockMap.get(card.dataset.blockId);
     if (!block && pendingCsv) {
@@ -241,10 +242,14 @@ function enhanceCards() {
       blockMap.set(block.id, block);
       pendingCsv = false;
     }
-    if (!block) return;
+    if (!block) {
+      missing = true;
+      return;
+    }
     addCodeBadge(card, block);
     if (block.type === 'csv') enhanceCsv(card, block);
   });
+  if (missing) scheduleRefresh();
 }
 
 async function refreshBlocks() {
