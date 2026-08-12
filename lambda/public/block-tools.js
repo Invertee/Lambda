@@ -70,7 +70,7 @@ function offline() {
 
 function updateCsvDisabledState(card) {
   const disabled = offline();
-  card.querySelectorAll('.csv-editor-table input, [data-csv-edit]').forEach((element) => {
+  card.querySelectorAll('.csv-editor-table input, [data-csv-edit], .csv-generated-controls button').forEach((element) => {
     element.disabled = disabled;
   });
 }
@@ -123,6 +123,31 @@ function editingButton(label, action) {
   return button;
 }
 
+function actionButton(role, label, title) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `block-control${role === 'remove' ? ' remove' : ''}`;
+  button.dataset.role = role;
+  button.title = title;
+  button.setAttribute('aria-label', title);
+  button.textContent = label;
+  return button;
+}
+
+function ensureBlockControls(card) {
+  let controls = card.querySelector('.block-controls');
+  if (controls) return controls;
+  controls = document.createElement('div');
+  controls.className = 'block-controls csv-generated-controls';
+  controls.append(
+    actionButton('move-up', '↑', 'Move block up'),
+    actionButton('move-down', '↓', 'Move block down'),
+    actionButton('remove', '×', 'Remove block'),
+  );
+  card.append(controls);
+  return controls;
+}
+
 function enhanceCsv(card, block) {
   if (card.dataset.csvEnhanced === '1') {
     updateCsvDisabledState(card);
@@ -131,7 +156,7 @@ function enhanceCsv(card, block) {
   card.dataset.csvEnhanced = '1';
   card.classList.add('csv-block');
   const rows = parseCsv(block.content || '');
-  const controls = card.querySelector('.block-controls');
+  const controls = ensureBlockControls(card);
 
   const toolbar = document.createElement('div');
   toolbar.className = 'csv-toolbar';
@@ -182,10 +207,9 @@ function enhanceCsv(card, block) {
   source.dataset.role = 'content';
   source.value = block.content || '';
 
-  if (controls) card.insertBefore(toolbar, controls);
-  else card.prepend(toolbar);
-  card.insertBefore(tableHolder, controls || null);
-  card.insertBefore(source, controls || null);
+  card.insertBefore(toolbar, controls);
+  card.insertBefore(tableHolder, controls);
+  card.insertBefore(source, controls);
   renderTable(card, rows);
   updateCsvDisabledState(card);
 }
