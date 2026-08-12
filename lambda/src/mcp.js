@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { validateCategoryName, validateNote } from './validation.js';
+import { validateBlockCode, validateCategoryName, validateNote } from './validation.js';
 
 export const MCP_PROTOCOL_VERSION = '2026-07-28';
 const LEGACY_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
@@ -9,8 +9,9 @@ const blockSchema = {
   type: 'object',
   properties: {
     id: { type: 'string', description: 'Optional stable block ID.' },
-    type: { type: 'string', enum: ['text', 'heading', 'code'], description: 'Block type.' },
-    content: { type: 'string', description: 'Block text or source code.' },
+    code: { type: 'string', pattern: '^[A-Za-z0-9]{5}$', description: 'Server-assigned five-character block code.' },
+    type: { type: 'string', enum: ['text', 'heading', 'code', 'csv'], description: 'Block type.' },
+    content: { type: 'string', description: 'Block text, source code, or CSV content.' },
     language: { type: 'string', description: 'Language identifier for a code block.' },
     level: { type: 'integer', minimum: 1, maximum: 3, description: 'Heading level.' },
   },
@@ -22,8 +23,8 @@ const noteFields = {
   category: { type: 'string', maxLength: 80, description: 'Category name. It is created automatically if needed.' },
   tags: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 40 } },
   blocks: { type: 'array', maxItems: 100, items: blockSchema, description: 'Complete ordered block list.' },
-  content: { type: 'string', description: 'Convenience alternative to blocks for a single text or code block.' },
-  content_type: { type: 'string', enum: ['text', 'heading', 'code'], description: 'Type used with content. Defaults to text.' },
+  content: { type: 'string', description: 'Convenience alternative to blocks for a single text, code, heading, or CSV block.' },
+  content_type: { type: 'string', enum: ['text', 'heading', 'code', 'csv'], description: 'Type used with content. Defaults to text.' },
   language: { type: 'string', description: 'Language used when content_type is code.' },
 };
 
@@ -31,11 +32,11 @@ export const MCP_TOOLS = [
   {
     name: 'list_notes',
     title: 'List and search notes',
-    description: 'List notes ordered by most recently updated, optionally filtering by full-text query, category, or tag.',
+    description: 'List notes ordered by most recently updated, optionally filtering by full-text query, category, tag, or block code.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Case-insensitive text matched across title, category, tags, and block content.' },
+        query: { type: 'string', description: 'Case-insensitive text matched across title, category, tags, block codes, and block content.' },
         category: { type: 'string' },
         tag: { type: 'string' },
         include_deleted: { type: 'boolean', default: false },
@@ -47,7 +48,7 @@ export const MCP_TOOLS = [
   {
     name: 'get_note',
     title: 'Get a note',
-    description: 'Get one complete note, including its ordered content blocks and tags.',
+    description: 'Get one complete note, including its ordered content blocks, five-character block codes, and tags.',
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'string', description: 'Note UUID.' } },
@@ -55,6 +56,36 @@ export const MCP_TOOLS = [
       additionalProperties: false,
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: 'get_block',
+    title: 'Get a block by code',
+    description: 'Retrieve one active block directly using its five-character alphanumeric code.',
+    inputSchema: {
+      type: 'object',
+      properties: { code: { type: 'string', pattern: '^[A-Za-z0-9]{5}$' } },
+      required: ['code'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: 'update_block',
+    title: 'Update a block by code',
+    description: 'Replace the content of an active text, heading, code, or CSV block using its five-character code. Set type to csv when supplying CSV table data.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        code: { type: 'string', pattern: '^[A-Za-z0-9]{5}$' },
+        content: { type: 'string' },
+        type: { type: 'string', enum: ['text', 'heading', 'code', 'csv'] },
+        language: { type: 'string' },
+        level: { type: 'integer', minimum: 1, maximum: 3 },
+      },
+      required: ['code', 'content'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   },
   {
     name: 'create_note',
@@ -196,6 +227,13 @@ function requireResult(value, message) {
 const toolHandlers = {
   list_notes: (database, args) => listNotes(database, args),
   get_note: (database, args) => requireResult(database.getNote(String(args.id || '')), 'Note not found.'),
+  get_block: (database, args) => requireResult(database.getBlock(validateBlockCode(args.code)), 'Active block not found.'),
+  update_block: (database, args) => requireResult(database.updateBlock(validateBlockCode(args.code), {
+    content: args.content,
+    ...(args.type !== undefined ? { type: args.type } : {}),
+    ...(args.language !== undefined ? { language: args.language } : {}),
+    ...(args.level !== undefined ? { level: args.level } : {}),
+  }), 'Active block not found.'),
   create_note: createNote,
   update_note: updateNote,
   delete_note: (database, args) => ({ deleted: requireResult(database.softDelete(String(args.id || '')), 'Active note not found.'), id: args.id }),
@@ -247,8 +285,8 @@ export function processMcpMessage(database, message) {
         resultType: 'complete',
         supportedVersions: SUPPORTED_PROTOCOL_VERSIONS,
         capabilities: { tools: {} },
-        serverInfo: { name: 'lambda-notes', version: '1.0.0' },
-        instructions: 'Use the note tools to search, create, update, categorise, soft-delete, and restore Lambda notes.',
+        serverInfo: { name: 'lambda-notes', version: '1.2.0' },
+        instructions: 'Use note and block tools to search, create, update, categorise, soft-delete, restore, and address individual Lambda blocks by code.',
       }),
     };
   }
@@ -261,8 +299,8 @@ export function processMcpMessage(database, message) {
       body: result(message.id, {
         protocolVersion,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: 'lambda-notes', version: '1.0.0' },
-        instructions: 'Use the note tools to search, create, update, categorise, soft-delete, and restore Lambda notes.',
+        serverInfo: { name: 'lambda-notes', version: '1.2.0' },
+        instructions: 'Use note and block tools to search, create, update, categorise, soft-delete, restore, and address individual Lambda blocks by code.',
       }),
     };
   }
