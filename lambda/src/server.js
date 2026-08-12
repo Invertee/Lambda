@@ -8,7 +8,7 @@ import { loadConfig } from './config.js';
 import { SnippetDatabase } from './database.js';
 import { EncryptionVault } from './encryption.js';
 import { MCP_PROTOCOL_VERSION, processMcpMessage } from './mcp.js';
-import { ValidationError, validateBackup, validateCategoryName, validateNote } from './validation.js';
+import { ValidationError, validateBackup, validateBlockCode, validateCategoryName, validateNote } from './validation.js';
 
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MAX_BODY_BYTES = 12 * 1024 * 1024;
@@ -84,16 +84,32 @@ async function readJsonObject(request) {
   return body;
 }
 
+async function readBlockUpdate(request) {
+  const contentType = String(request.headers['content-type'] || '').toLowerCase();
+  if (contentType.includes('application/json')) return readJsonObject(request);
+  const content = (await readBody(request)).toString('utf8');
+  return contentType.includes('text/csv') ? { type: 'csv', content } : { content };
+}
+
 function downloadFilename(value) {
   const cleaned = String(value || 'attachment').replace(/[\r\n]/g, '').slice(0, 255) || 'attachment';
   const ascii = cleaned.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(cleaned)}`;
 }
 
+function withBlockTools(contents) {
+  const html = contents.toString('utf8');
+  if (html.includes('block-tools.js')) return contents;
+  return Buffer.from(html
+    .replace('</head>', '  <link rel="stylesheet" href="block-tools.css?v=1.2.0">\n</head>')
+    .replace('</body>', '  <script type="module" src="block-tools.js?v=1.2.0"></script>\n</body>'));
+}
+
 function serveFile(response, filename) {
   const extension = path.extname(filename).toLowerCase();
   try {
-    const contents = fs.readFileSync(filename);
+    let contents = fs.readFileSync(filename);
+    if (path.basename(filename) === 'index.html') contents = withBlockTools(contents);
     response.writeHead(200, {
       ...securityHeaders(),
       'Content-Type': MIME_TYPES[extension] || 'application/octet-stream',
@@ -199,9 +215,7 @@ export function createApp(customConfig = {}) {
           'WWW-Authenticate': 'Bearer realm="Lambda API"',
         });
       }
-      if (sessionToken) {
-        response.setHeader('Set-Cookie', auth.cookie(sessionToken, request, config.cookieSecure));
-      }
+      if (sessionToken) response.setHeader('Set-Cookie', auth.cookie(sessionToken, request, config.cookieSecure));
 
       if (pathname === '/api/bootstrap' && request.method === 'GET') {
         return json(response, 200, {
@@ -232,9 +246,8 @@ export function createApp(customConfig = {}) {
           throw error;
         }
         let name;
-        try {
-          name = decodeURIComponent(String(request.headers['x-file-name'] || 'attachment'));
-        } catch {
+        try { name = decodeURIComponent(String(request.headers['x-file-name'] || 'attachment')); }
+        catch {
           const error = new Error('Attachment name is invalid.');
           error.statusCode = 400;
           throw error;
@@ -276,6 +289,16 @@ export function createApp(customConfig = {}) {
         return response.end(contents);
       }
 
+      const blockMatch = pathname.match(/^\/api\/blocks\/([a-z0-9]{5})$/i);
+      if (blockMatch && request.method === 'GET') {
+        const block = database.getBlock(validateBlockCode(blockMatch[1]));
+        return block ? json(response, 200, block) : json(response, 404, { error: 'Active block not found.' });
+      }
+      if (blockMatch && ['PATCH', 'PUT'].includes(request.method)) {
+        const block = database.updateBlock(validateBlockCode(blockMatch[1]), await readBlockUpdate(request));
+        return block ? json(response, 200, block) : json(response, 404, { error: 'Active block not found.' });
+      }
+
       if (pathname === '/api/notes' && request.method === 'GET') {
         return json(response, 200, database.listNotes({
           deleted: url.searchParams.get('trash') === '1',
@@ -290,10 +313,7 @@ export function createApp(customConfig = {}) {
         return json(response, 201, database.createNote(note));
       }
 
-      if (pathname === '/api/categories' && request.method === 'GET') {
-        return json(response, 200, database.listCategories());
-      }
-
+      if (pathname === '/api/categories' && request.method === 'GET') return json(response, 200, database.listCategories());
       if (pathname === '/api/categories' && request.method === 'POST') {
         const body = await readJsonObject(request);
         return json(response, 201, database.createCategory(validateCategoryName(body.name)));
@@ -303,14 +323,10 @@ export function createApp(customConfig = {}) {
       if (categoryMatch && request.method === 'PATCH') {
         const body = await readJsonObject(request);
         const category = database.renameCategory(Number(categoryMatch[1]), validateCategoryName(body.name));
-        return category
-          ? json(response, 200, category)
-          : json(response, 404, { error: 'Category not found.' });
+        return category ? json(response, 200, category) : json(response, 404, { error: 'Category not found.' });
       }
       if (categoryMatch && request.method === 'DELETE') {
-        return database.deleteCategory(Number(categoryMatch[1]))
-          ? empty(response)
-          : json(response, 404, { error: 'Category not found.' });
+        return database.deleteCategory(Number(categoryMatch[1])) ? empty(response) : json(response, 404, { error: 'Category not found.' });
       }
 
       const versionMatch = pathname.match(/^\/api\/notes\/([a-f0-9-]+)\/versions(?:\/(\d+)\/restore)?$/i);
@@ -320,21 +336,15 @@ export function createApp(customConfig = {}) {
       }
       if (versionMatch && request.method === 'POST' && versionMatch[2]) {
         const restored = database.restoreVersion(versionMatch[1], Number(versionMatch[2]));
-        return restored
-          ? json(response, 200, restored)
-          : json(response, 404, { error: 'Note or version not found.' });
+        return restored ? json(response, 200, restored) : json(response, 404, { error: 'Note or version not found.' });
       }
 
       const actionMatch = pathname.match(/^\/api\/notes\/([a-f0-9-]+)\/(restore|permanent)$/i);
       if (actionMatch && actionMatch[2] === 'restore' && request.method === 'POST') {
-        return database.restoreNote(actionMatch[1])
-          ? json(response, 200, database.getNote(actionMatch[1]))
-          : json(response, 404, { error: 'Deleted note not found.' });
+        return database.restoreNote(actionMatch[1]) ? json(response, 200, database.getNote(actionMatch[1])) : json(response, 404, { error: 'Deleted note not found.' });
       }
       if (actionMatch && actionMatch[2] === 'permanent' && request.method === 'DELETE') {
-        return database.permanentlyDelete(actionMatch[1])
-          ? empty(response)
-          : json(response, 404, { error: 'Deleted note not found.' });
+        return database.permanentlyDelete(actionMatch[1]) ? empty(response) : json(response, 404, { error: 'Deleted note not found.' });
       }
 
       const noteMatch = pathname.match(/^\/api\/notes\/([a-f0-9-]+)$/i);
@@ -361,9 +371,7 @@ export function createApp(customConfig = {}) {
         return json(response, 200, note);
       }
       if (noteMatch && request.method === 'DELETE') {
-        return database.softDelete(noteMatch[1])
-          ? empty(response)
-          : json(response, 404, { error: 'Active note not found.' });
+        return database.softDelete(noteMatch[1]) ? empty(response) : json(response, 404, { error: 'Active note not found.' });
       }
 
       if (pathname.startsWith('/api/')) return json(response, 404, { error: 'Not found.' });
@@ -397,7 +405,5 @@ if (isMain) {
   const app = createApp();
   await app.listen();
   console.log(`Lambda is listening on http://${app.config.host}:${app.config.port}`);
-  if (app.config.password === 'changeme') {
-    console.warn('WARNING: Using the default password. Set APP_PASSWORD or configure the add-on password.');
-  }
+  if (app.config.password === 'changeme') console.warn('WARNING: Using the default password. Set APP_PASSWORD or configure the add-on password.');
 }
