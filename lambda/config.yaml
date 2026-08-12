@@ -1,5 +1,5 @@
 name: Lambda
-version: "1.1.0"
+version: "1.2.0"
 slug: lambda
 description: A private, block-based library for notes and reusable script snippets.
 url: https://github.com/Invertee/Lambda
