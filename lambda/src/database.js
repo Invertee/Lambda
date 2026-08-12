@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
 const NOTE_SELECT = `
@@ -15,12 +15,21 @@ const NOTE_SELECT = `
   LEFT JOIN categories c ON c.id = n.category_id
 `;
 
+const BLOCK_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
 function parseJson(value, fallback) {
   try { return JSON.parse(value); } catch { return fallback; }
 }
 
 function sessionDigest(token) {
   return createHash('sha256').update(String(token)).digest('hex');
+}
+
+function blockCodeCandidate() {
+  const bytes = randomBytes(5);
+  let code = '';
+  for (const byte of bytes) code += BLOCK_CODE_CHARS[byte % BLOCK_CODE_CHARS.length];
+  return code;
 }
 
 class SqliteSessionStore {
@@ -53,12 +62,21 @@ export class SnippetDatabase {
       CREATE TABLE IF NOT EXISTS note_tags (note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE, PRIMARY KEY (note_id, tag_id));
       CREATE TABLE IF NOT EXISTS versions (id INTEGER PRIMARY KEY AUTOINCREMENT, note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, version_key TEXT NOT NULL, title TEXT NOT NULL, category TEXT, tags_json TEXT NOT NULL, blocks_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(note_id, version_key));
       CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS block_refs (
+        code TEXT PRIMARY KEY,
+        note_id TEXT NOT NULL,
+        block_id TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_notes_deleted_updated ON notes(deleted_at, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_versions_note_created ON versions(note_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_block_refs_note ON block_refs(note_id, active);
       INSERT OR IGNORE INTO categories (name, created_at) VALUES ('General', datetime('now'));
       UPDATE notes SET category_id = (SELECT id FROM categories WHERE name = 'General' COLLATE NOCASE) WHERE category_id IS NULL;
     `);
+    this.rebuildBlockRefs();
   }
 
   close() { this.db.close(); }
@@ -104,7 +122,7 @@ export class SnippetDatabase {
       if (tagKey && !note.tags.some((item) => item.toLocaleLowerCase() === tagKey)) return false;
       if (searchKey) {
         const searchable = [note.title, note.category || '', ...note.tags,
-          ...note.blocks.map((block) => `${block.content || ''} ${block.language || ''} ${block.alt || ''} ${block.name || ''}`),
+          ...note.blocks.map((block) => `${block.code || ''} ${block.content || ''} ${block.language || ''} ${block.alt || ''} ${block.name || ''}`),
         ].join(' ').toLocaleLowerCase();
         if (!searchable.includes(searchKey)) return false;
       }
@@ -157,14 +175,73 @@ export class SnippetDatabase {
     this.db.exec('DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM note_tags)');
   }
 
+  generateBlockCode() {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const code = blockCodeCandidate();
+      if (!this.db.prepare('SELECT 1 FROM block_refs WHERE code = ?').get(code)) return code;
+    }
+    throw new Error('Could not allocate a unique block code.');
+  }
+
+  prepareBlocks(noteId, blocks, currentBlocks = []) {
+    const currentById = new Map(currentBlocks.map((block) => [block.id, block]));
+    const seenCodes = new Set();
+    return blocks.map((block) => {
+      const current = currentById.get(block.id);
+      let code = String(block.code || current?.code || '').toUpperCase();
+      if (code && !/^[A-Z0-9]{5}$/.test(code)) code = '';
+      if (code) {
+        const owner = this.db.prepare('SELECT note_id, block_id FROM block_refs WHERE code = ?').get(code);
+        if (owner && (owner.note_id !== noteId || owner.block_id !== block.id)) {
+          const error = new Error(`Block code ${code} is already in use.`);
+          error.statusCode = 409;
+          throw error;
+        }
+      }
+      if (!code) code = this.generateBlockCode();
+      if (seenCodes.has(code)) {
+        const error = new Error(`Duplicate block code ${code}.`);
+        error.statusCode = 409;
+        throw error;
+      }
+      seenCodes.add(code);
+      return { ...block, code };
+    });
+  }
+
+  syncBlockRefs(noteId, blocks, active = true) {
+    this.db.prepare('UPDATE block_refs SET active = 0 WHERE note_id = ?').run(noteId);
+    const upsert = this.db.prepare(`
+      INSERT INTO block_refs (code, note_id, block_id, active, created_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(code) DO UPDATE SET note_id = excluded.note_id, block_id = excluded.block_id, active = excluded.active
+    `);
+    const now = new Date().toISOString();
+    for (const block of blocks) upsert.run(block.code, noteId, block.id, active ? 1 : 0, now);
+  }
+
+  rebuildBlockRefs() {
+    const notes = this.db.prepare(`${NOTE_SELECT} ORDER BY n.created_at`).all().map((row) => this.noteFromRow(row));
+    for (const note of notes) {
+      const prepared = this.prepareBlocks(note.id, note.blocks, note.blocks);
+      const changed = JSON.stringify(prepared) !== JSON.stringify(note.blocks);
+      if (changed) {
+        this.db.prepare('UPDATE notes SET blocks_json = ? WHERE id = ?').run(this.encodeBlocks(note.id, prepared), note.id);
+      }
+      this.syncBlockRefs(note.id, prepared, !note.deletedAt);
+    }
+  }
+
   createNote({ title, category, tags, blocks }) {
     const id = randomUUID();
     const now = new Date().toISOString();
+    let preparedBlocks;
     this.transaction(() => {
+      preparedBlocks = this.prepareBlocks(id, blocks);
       const categoryId = this.resolveCategory(category);
       this.db.prepare(`INSERT INTO notes (id, title, category_id, blocks_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
-        .run(id, this.encodeTitle(id, title), categoryId, this.encodeBlocks(id, blocks), now, now);
+        .run(id, this.encodeTitle(id, title), categoryId, this.encodeBlocks(id, preparedBlocks), now, now);
       this.setTags(id, tags);
+      this.syncBlockRefs(id, preparedBlocks, true);
     });
     return this.getNote(id);
   }
@@ -178,21 +255,94 @@ export class SnippetDatabase {
   updateNote(id, { title, category, tags, blocks, versionToken }) {
     const current = this.getNote(id);
     if (!current || current.deletedAt) return null;
-    const changed = current.title !== title || (current.category || '') !== (category || '') || JSON.stringify(current.tags) !== JSON.stringify(tags) || JSON.stringify(current.blocks) !== JSON.stringify(blocks);
+    const preparedBlocks = this.prepareBlocks(id, blocks, current.blocks);
+    const changed = current.title !== title || (current.category || '') !== (category || '') || JSON.stringify(current.tags) !== JSON.stringify(tags) || JSON.stringify(current.blocks) !== JSON.stringify(preparedBlocks);
     if (!changed) return current;
     this.transaction(() => {
       this.snapshot(current, versionToken || randomUUID());
       const categoryId = this.resolveCategory(category);
       this.db.prepare(`UPDATE notes SET title = ?, category_id = ?, blocks_json = ?, updated_at = ? WHERE id = ?`)
-        .run(this.encodeTitle(id, title), categoryId, this.encodeBlocks(id, blocks), new Date().toISOString(), id);
+        .run(this.encodeTitle(id, title), categoryId, this.encodeBlocks(id, preparedBlocks), new Date().toISOString(), id);
       this.setTags(id, tags);
+      this.syncBlockRefs(id, preparedBlocks, true);
     });
     return this.getNote(id);
   }
 
-  softDelete(id) { const now = new Date().toISOString(); return this.db.prepare('UPDATE notes SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(now, now, id).changes > 0; }
-  restoreNote(id) { return this.db.prepare('UPDATE notes SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL').run(new Date().toISOString(), id).changes > 0; }
-  permanentlyDelete(id) { return this.db.prepare('DELETE FROM notes WHERE id = ? AND deleted_at IS NOT NULL').run(id).changes > 0; }
+  getBlock(code) {
+    const ref = this.db.prepare('SELECT note_id, block_id FROM block_refs WHERE code = ? AND active = 1').get(String(code).toUpperCase());
+    if (!ref) return null;
+    const note = this.getNote(ref.note_id);
+    if (!note || note.deletedAt) return null;
+    const block = note.blocks.find((item) => item.id === ref.block_id && item.code === String(code).toUpperCase());
+    if (!block) return null;
+    return {
+      code: block.code,
+      noteId: note.id,
+      noteTitle: note.title,
+      category: note.category,
+      block,
+      updatedAt: note.updatedAt,
+    };
+  }
+
+  updateBlock(code, changes = {}) {
+    const target = this.getBlock(code);
+    if (!target) return null;
+    const current = target.block;
+    const type = changes.type === undefined ? current.type : String(changes.type);
+    if (!['text', 'heading', 'code', 'csv'].includes(type)) {
+      const error = new Error('Direct block updates support text, heading, code, and csv blocks.');
+      error.statusCode = 400;
+      throw error;
+    }
+    const content = changes.content === undefined ? String(current.content || '') : String(changes.content);
+    if (content.length > 1_000_000) {
+      const error = new Error('Block content is too large.');
+      error.statusCode = 400;
+      throw error;
+    }
+    let replacement = { id: current.id, code: current.code, type, content };
+    if (type === 'code') replacement.language = String(changes.language ?? current.language ?? 'powershell').slice(0, 40);
+    if (type === 'heading') replacement.level = Math.min(3, Math.max(1, Number(changes.level ?? current.level) || 2));
+
+    const note = this.getNote(target.noteId);
+    const blocks = note.blocks.map((block) => block.id === current.id ? replacement : block);
+    const updated = this.updateNote(note.id, {
+      title: note.title,
+      category: note.category,
+      tags: note.tags,
+      blocks,
+      versionToken: randomUUID(),
+    });
+    return updated ? this.getBlock(current.code) : null;
+  }
+
+  softDelete(id) {
+    const now = new Date().toISOString();
+    return this.transaction(() => {
+      const changed = this.db.prepare('UPDATE notes SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(now, now, id).changes > 0;
+      if (changed) this.db.prepare('UPDATE block_refs SET active = 0 WHERE note_id = ?').run(id);
+      return changed;
+    });
+  }
+
+  restoreNote(id) {
+    return this.transaction(() => {
+      const changed = this.db.prepare('UPDATE notes SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL').run(new Date().toISOString(), id).changes > 0;
+      if (changed) this.db.prepare('UPDATE block_refs SET active = 1 WHERE note_id = ?').run(id);
+      return changed;
+    });
+  }
+
+  permanentlyDelete(id) {
+    const current = this.getNote(id);
+    if (!current || !current.deletedAt) return false;
+    return this.transaction(() => {
+      this.db.prepare('UPDATE block_refs SET active = 0 WHERE note_id = ?').run(id);
+      return this.db.prepare('DELETE FROM notes WHERE id = ? AND deleted_at IS NOT NULL').run(id).changes > 0;
+    });
+  }
 
   listVersions(noteId) {
     return this.db.prepare(`SELECT id, version_key, title, category, tags_json, blocks_json, created_at FROM versions WHERE note_id = ? ORDER BY created_at DESC, id DESC LIMIT 20`).all(noteId).map((row) => ({
@@ -212,7 +362,7 @@ export class SnippetDatabase {
 
   restoreBackup(backup) {
     this.transaction(() => {
-      this.db.exec('DELETE FROM note_tags; DELETE FROM versions; DELETE FROM notes; DELETE FROM tags; DELETE FROM categories;');
+      this.db.exec('DELETE FROM note_tags; DELETE FROM versions; DELETE FROM notes; DELETE FROM tags; DELETE FROM categories; UPDATE block_refs SET active = 0;');
       const insertCategory = this.db.prepare('INSERT OR IGNORE INTO categories (name, created_at) VALUES (?, ?)');
       for (const category of backup.categories) insertCategory.run(category.name, new Date().toISOString());
       for (const note of backup.notes) insertCategory.run(note.category, note.createdAt);
@@ -221,11 +371,14 @@ export class SnippetDatabase {
       const insertNote = this.db.prepare(`INSERT INTO notes (id, title, category_id, blocks_json, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
       const insertVersion = this.db.prepare(`INSERT INTO versions (note_id, version_key, title, category, tags_json, blocks_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
       for (const note of backup.notes) {
-        insertNote.run(note.id, this.encodeTitle(note.id, note.title), categoryId.get(note.category).id, this.encodeBlocks(note.id, note.blocks), note.createdAt, note.updatedAt, note.deletedAt);
+        const preparedBlocks = this.prepareBlocks(note.id, note.blocks);
+        insertNote.run(note.id, this.encodeTitle(note.id, note.title), categoryId.get(note.category).id, this.encodeBlocks(note.id, preparedBlocks), note.createdAt, note.updatedAt, note.deletedAt);
         this.setTags(note.id, note.tags);
+        this.syncBlockRefs(note.id, preparedBlocks, !note.deletedAt);
         note.versions.forEach((version, index) => {
           const versionKey = `import-${index}-${randomUUID()}`;
-          insertVersion.run(note.id, versionKey, this.encodeVersionTitle(note.id, versionKey, version.title), version.category, JSON.stringify(version.tags), this.encodeVersionBlocks(note.id, versionKey, version.blocks), version.createdAt);
+          const versionBlocks = version.blocks.map((block) => ({ ...block }));
+          insertVersion.run(note.id, versionKey, this.encodeVersionTitle(note.id, versionKey, version.title), version.category, JSON.stringify(version.tags), this.encodeVersionBlocks(note.id, versionKey, versionBlocks), version.createdAt);
         });
       }
     });
@@ -237,13 +390,17 @@ export class SnippetDatabase {
     const version = this.db.prepare(`SELECT id, version_key, title, category, tags_json, blocks_json FROM versions WHERE id = ? AND note_id = ?`).get(versionId, noteId);
     if (!current || !version || current.deletedAt) return null;
     const title = this.decodeVersionTitle(noteId, version.version_key, version.title);
-    const blocks = this.decodeVersionBlocks(noteId, version.version_key, version.blocks_json);
+    const restoredBlocks = this.decodeVersionBlocks(noteId, version.version_key, version.blocks_json);
+    const currentById = new Map(current.blocks.map((block) => [block.id, block]));
+    const blocks = restoredBlocks.map((block) => ({ ...block, code: currentById.get(block.id)?.code || block.code }));
     this.transaction(() => {
       this.snapshot(current, `restore-${randomUUID()}`);
+      const preparedBlocks = this.prepareBlocks(noteId, blocks, current.blocks);
       const categoryId = this.resolveCategory(version.category);
       this.db.prepare(`UPDATE notes SET title = ?, category_id = ?, blocks_json = ?, updated_at = ? WHERE id = ?`)
-        .run(this.encodeTitle(noteId, title), categoryId, this.encodeBlocks(noteId, blocks), new Date().toISOString(), noteId);
+        .run(this.encodeTitle(noteId, title), categoryId, this.encodeBlocks(noteId, preparedBlocks), new Date().toISOString(), noteId);
       this.setTags(noteId, parseJson(version.tags_json, []));
+      this.syncBlockRefs(noteId, preparedBlocks, true);
     });
     return this.getNote(noteId);
   }
