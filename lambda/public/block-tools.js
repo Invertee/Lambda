@@ -70,7 +70,7 @@ function offline() {
 
 function updateCsvDisabledState(card) {
   const disabled = offline();
-  card.querySelectorAll('.csv-editor-table input, [data-csv-edit], .csv-generated-controls button').forEach((element) => {
+  card.querySelectorAll('.csv-cell-input, .csv-header-name, [data-csv-edit], .csv-generated-controls button').forEach((element) => {
     element.disabled = disabled;
   });
 }
@@ -84,32 +84,159 @@ function syncSource(card, rows) {
   if (block) block.content = source.value;
 }
 
-function renderTable(card, rows) {
-  const holder = card.querySelector('[data-csv-table]');
-  if (!holder) return;
-  const table = document.createElement('table');
-  table.className = 'csv-editor-table';
-  const body = document.createElement('tbody');
-  rows.forEach((row, rowIndex) => {
+function normalizeTableState(state, rows) {
+  const width = rows[0]?.length || 1;
+  while (state.filters.length < width) state.filters.push('');
+  state.filters.length = width;
+  if (state.sortColumn !== null && state.sortColumn >= width) {
+    state.sortColumn = null;
+    state.sortDirection = 0;
+  }
+}
+
+function compareValues(left, right) {
+  const leftText = String(left ?? '').trim();
+  const rightText = String(right ?? '').trim();
+  const leftNumber = Number(leftText);
+  const rightNumber = Number(rightText);
+  if (leftText && rightText && Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+    return leftNumber - rightNumber;
+  }
+  return leftText.localeCompare(rightText, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function visibleRows(rows, state) {
+  const globalFilter = state.globalFilter.trim().toLocaleLowerCase();
+  const filters = state.filters.map((value) => value.trim().toLocaleLowerCase());
+  const values = rows.slice(1).map((row, index) => ({ row, sourceIndex: index + 1 }));
+  const filtered = values.filter(({ row }) => {
+    if (globalFilter && !row.some((value) => String(value ?? '').toLocaleLowerCase().includes(globalFilter))) return false;
+    return filters.every((filter, columnIndex) => !filter || String(row[columnIndex] ?? '').toLocaleLowerCase().includes(filter));
+  });
+  if (state.sortColumn === null || !state.sortDirection) return filtered;
+  return filtered.sort((left, right) => {
+    const compared = compareValues(left.row[state.sortColumn], right.row[state.sortColumn]);
+    return compared ? compared * state.sortDirection : left.sourceIndex - right.sourceIndex;
+  });
+}
+
+function updateSortButtons(card, state) {
+  card.querySelectorAll('[data-csv-sort]').forEach((button) => {
+    const columnIndex = Number(button.dataset.csvSort);
+    const active = state.sortColumn === columnIndex && state.sortDirection;
+    button.textContent = active ? (state.sortDirection === 1 ? '↑' : '↓') : '↕';
+    button.classList.toggle('active', Boolean(active));
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+}
+
+function renderTableBody(card, rows, state) {
+  const body = card.querySelector('.csv-editor-table tbody');
+  if (!body) return;
+  const records = visibleRows(rows, state);
+  if (!records.length) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.className = 'csv-no-results';
+    cell.colSpan = rows[0]?.length || 1;
+    cell.textContent = rows.length > 1 ? 'No rows match the current filters.' : 'No data rows yet.';
+    row.append(cell);
+    body.replaceChildren(row);
+    return;
+  }
+
+  body.replaceChildren(...records.map(({ row, sourceIndex }) => {
     const tr = document.createElement('tr');
+    tr.dataset.csvSourceRow = sourceIndex;
     row.forEach((value, columnIndex) => {
-      const cell = document.createElement(rowIndex === 0 ? 'th' : 'td');
+      const cell = document.createElement('td');
       const input = document.createElement('input');
+      input.className = 'csv-cell-input';
       input.value = value;
       input.disabled = offline();
-      input.setAttribute('aria-label', `Row ${rowIndex + 1}, column ${columnIndex + 1}`);
+      input.setAttribute('aria-label', `Data row ${sourceIndex}, column ${columnIndex + 1}`);
       input.addEventListener('input', (event) => {
         event.stopPropagation();
-        rows[rowIndex][columnIndex] = input.value;
+        rows[sourceIndex][columnIndex] = input.value;
         syncSource(card, rows);
       });
       cell.append(input);
       tr.append(cell);
     });
-    body.append(tr);
+    return tr;
+  }));
+}
+
+function renderTable(card, rows, state) {
+  const holder = card.querySelector('[data-csv-table]');
+  if (!holder) return;
+  normalizeTableState(state, rows);
+
+  const table = document.createElement('table');
+  table.className = 'csv-editor-table';
+  const head = document.createElement('thead');
+  const headerRow = document.createElement('tr');
+
+  (rows[0] || ['']).forEach((value, columnIndex) => {
+    const cell = document.createElement('th');
+    cell.scope = 'col';
+    const top = document.createElement('div');
+    top.className = 'csv-header-main';
+
+    const name = document.createElement('input');
+    name.className = 'csv-header-name';
+    name.value = value;
+    name.disabled = offline();
+    name.placeholder = `Column ${columnIndex + 1}`;
+    name.setAttribute('aria-label', `Column ${columnIndex + 1} heading`);
+    name.addEventListener('input', (event) => {
+      event.stopPropagation();
+      rows[0][columnIndex] = name.value;
+      syncSource(card, rows);
+    });
+
+    const sort = document.createElement('button');
+    sort.type = 'button';
+    sort.className = 'csv-sort-button';
+    sort.dataset.csvSort = columnIndex;
+    sort.title = `Sort column ${columnIndex + 1}`;
+    sort.setAttribute('aria-label', `Sort column ${columnIndex + 1}`);
+    sort.addEventListener('click', () => {
+      if (state.sortColumn !== columnIndex) {
+        state.sortColumn = columnIndex;
+        state.sortDirection = 1;
+      } else if (state.sortDirection === 1) state.sortDirection = -1;
+      else if (state.sortDirection === -1) {
+        state.sortColumn = null;
+        state.sortDirection = 0;
+      } else state.sortDirection = 1;
+      renderTableBody(card, rows, state);
+      updateSortButtons(card, state);
+    });
+
+    const filter = document.createElement('input');
+    filter.type = 'search';
+    filter.className = 'csv-column-filter';
+    filter.placeholder = 'Filter…';
+    filter.value = state.filters[columnIndex] || '';
+    filter.setAttribute('aria-label', `Filter column ${columnIndex + 1}`);
+    filter.addEventListener('input', (event) => {
+      event.stopPropagation();
+      state.filters[columnIndex] = filter.value;
+      renderTableBody(card, rows, state);
+    });
+
+    top.append(name, sort);
+    cell.append(top, filter);
+    headerRow.append(cell);
   });
-  table.append(body);
+
+  head.append(headerRow);
+  const body = document.createElement('tbody');
+  table.append(head, body);
   holder.replaceChildren(table);
+  renderTableBody(card, rows, state);
+  updateSortButtons(card, state);
 }
 
 function editingButton(label, action) {
@@ -156,6 +283,12 @@ function enhanceCsv(card, block) {
   card.dataset.csvEnhanced = '1';
   card.classList.add('csv-block');
   const rows = parseCsv(block.content || '');
+  const tableState = {
+    sortColumn: null,
+    sortDirection: 0,
+    filters: Array(rows[0]?.length || 1).fill(''),
+    globalFilter: '',
+  };
   const controls = ensureBlockControls(card);
 
   const toolbar = document.createElement('div');
@@ -163,29 +296,53 @@ function enhanceCsv(card, block) {
   const label = document.createElement('strong');
   label.textContent = 'CSV table';
 
+  const globalFilter = document.createElement('input');
+  globalFilter.type = 'search';
+  globalFilter.className = 'csv-global-filter';
+  globalFilter.placeholder = 'Filter table…';
+  globalFilter.setAttribute('aria-label', 'Filter all table rows');
+  globalFilter.addEventListener('input', () => {
+    tableState.globalFilter = globalFilter.value;
+    renderTableBody(card, rows, tableState);
+  });
+
+  const clearFilters = document.createElement('button');
+  clearFilters.type = 'button';
+  clearFilters.className = 'secondary-button';
+  clearFilters.textContent = 'Clear filters';
+  clearFilters.addEventListener('click', () => {
+    tableState.globalFilter = '';
+    tableState.filters.fill('');
+    globalFilter.value = '';
+    card.querySelectorAll('.csv-column-filter').forEach((input) => { input.value = ''; });
+    renderTableBody(card, rows, tableState);
+  });
+
   const addRow = editingButton('Add row', () => {
     rows.push(Array(rows[0]?.length || 1).fill(''));
-    renderTable(card, rows);
+    renderTableBody(card, rows, tableState);
     syncSource(card, rows);
   });
 
   const addColumn = editingButton('Add column', () => {
     rows.forEach((row) => row.push(''));
-    renderTable(card, rows);
+    tableState.filters.push('');
+    renderTable(card, rows, tableState);
     syncSource(card, rows);
   });
 
   const removeRow = editingButton('Remove row', () => {
     if (rows.length <= 1) return;
     rows.pop();
-    renderTable(card, rows);
+    renderTableBody(card, rows, tableState);
     syncSource(card, rows);
   });
 
   const removeColumn = editingButton('Remove column', () => {
     if ((rows[0]?.length || 1) <= 1) return;
     rows.forEach((row) => row.pop());
-    renderTable(card, rows);
+    normalizeTableState(tableState, rows);
+    renderTable(card, rows, tableState);
     syncSource(card, rows);
   });
 
@@ -195,7 +352,7 @@ function enhanceCsv(card, block) {
   download.textContent = 'Download CSV';
   download.addEventListener('click', () => downloadCsv(serializeCsv(rows)));
 
-  toolbar.append(label, addRow, addColumn, removeRow, removeColumn, download);
+  toolbar.append(label, globalFilter, clearFilters, addRow, addColumn, removeRow, removeColumn, download);
 
   const tableHolder = document.createElement('div');
   tableHolder.className = 'csv-table-wrap';
@@ -210,7 +367,7 @@ function enhanceCsv(card, block) {
   card.insertBefore(toolbar, controls);
   card.insertBefore(tableHolder, controls);
   card.insertBefore(source, controls);
-  renderTable(card, rows);
+  renderTable(card, rows, tableState);
   updateCsvDisabledState(card);
 }
 
