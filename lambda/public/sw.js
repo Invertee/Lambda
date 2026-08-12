@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lambda-shell-v8';
+const CACHE_NAME = 'lambda-shell-v9';
 const SHELL = [
   './',
   './index.html',
@@ -31,13 +31,13 @@ self.addEventListener('fetch', (event) => {
 
   if (event.request.mode === 'navigate') {
     event.respondWith(
-      fetch(event.request).catch(() => caches.match(new URL('./index.html', self.registration.scope))),
+      fetch(event.request).catch(() => caches.match(new URL('./index.html', self.registration.scope), { ignoreSearch: true })),
     );
     return;
   }
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
+    caches.match(event.request, { ignoreSearch: true }).then((cached) => {
       const refreshed = fetch(event.request).then((response) => {
         if (response.ok) caches.open(CACHE_NAME).then((cache) => cache.put(event.request, response.clone()));
         return response;
