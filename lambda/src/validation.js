@@ -14,6 +14,21 @@ export function validateCategoryName(value) {
   return text(value, 80, 'Category name', { allowEmpty: false });
 }
 
+export function validateBlockCode(value) {
+  const code = String(value || '').trim().toUpperCase();
+  if (!/^[A-Z0-9]{5}$/.test(code)) throw new ValidationError('Block code must be 5 alphanumeric characters.');
+  return code;
+}
+
+function optionalBlockCode(value) {
+  if (value === undefined || value === null || value === '') return '';
+  return validateBlockCode(value);
+}
+
+function withCode(block, code) {
+  return code ? { ...block, code } : block;
+}
+
 export function validateNote(input, { partial = false } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new ValidationError('A note object is required.');
@@ -41,18 +56,22 @@ export function validateNote(input, { partial = false } = {}) {
 
   const blocks = input.blocks ?? fallbackBlocks;
   if (!Array.isArray(blocks) || blocks.length > 100) throw new ValidationError('Blocks must be a list of at most 100 items.');
+  const seenBlockIds = new Set();
   result.blocks = blocks.map((block) => {
     if (!block || typeof block !== 'object') throw new ValidationError('Every block must be an object.');
     const type = block.type;
-    if (!['text', 'heading', 'code', 'image', 'file'].includes(type)) throw new ValidationError('Unsupported block type.');
+    if (!['text', 'heading', 'code', 'csv', 'image', 'file'].includes(type)) throw new ValidationError('Unsupported block type.');
     const id = typeof block.id === 'string' && block.id.length <= 100 ? block.id : randomUUID();
+    if (seenBlockIds.has(id)) throw new ValidationError('Block IDs must be unique within a note.');
+    seenBlockIds.add(id);
+    const code = optionalBlockCode(block.code);
 
     if (type === 'image') {
       const content = String(block.content || '');
       if (content && !/^data:image\/(png|jpeg|webp|gif);base64,/i.test(content)) {
         throw new ValidationError('Images must be PNG, JPEG, WebP, or GIF data.');
       }
-      return { id, type, content, alt: text(String(block.alt || ''), 300, 'Image description') };
+      return withCode({ id, type, content, alt: text(String(block.alt || ''), 300, 'Image description') }, code);
     }
 
     if (type === 'file') {
@@ -62,25 +81,25 @@ export function validateNote(input, { partial = false } = {}) {
       if (!Number.isSafeInteger(size) || size < 0 || size > 25 * 1024 * 1024) {
         throw new ValidationError('Attachment size is invalid.');
       }
-      return {
+      return withCode({
         id,
         type,
         attachmentId,
         name: text(String(block.name || ''), 255, 'Attachment name', { allowEmpty: false }),
         size,
         mime: text(String(block.mime || 'application/octet-stream'), 120, 'Attachment type', { allowEmpty: false }),
-      };
+      }, code);
     }
 
     const content = String(block.content || '');
     if (content.length > 1_000_000) throw new ValidationError('A content block is too large.');
     if (type === 'code') {
-      return { id, type, content, language: text(String(block.language || 'powershell'), 40, 'Language') };
+      return withCode({ id, type, content, language: text(String(block.language || 'powershell'), 40, 'Language') }, code);
     }
     if (type === 'heading') {
-      return { id, type, content, level: Math.min(3, Math.max(1, Number(block.level) || 2)) };
+      return withCode({ id, type, content, level: Math.min(3, Math.max(1, Number(block.level) || 2)) }, code);
     }
-    return { id, type, content };
+    return withCode({ id, type, content }, code);
   });
 
   return result;
