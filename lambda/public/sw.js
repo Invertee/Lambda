@@ -1,5 +1,15 @@
-const CACHE_NAME = 'lambda-shell-v7';
-const SHELL = ['./', './index.html', './styles.css', './app.js', './icon-192.png', './icon-512.png', './manifest.webmanifest'];
+const CACHE_NAME = 'lambda-shell-v8';
+const SHELL = [
+  './',
+  './index.html',
+  './styles.css',
+  './app.js',
+  './block-tools.css',
+  './block-tools.js',
+  './icon-192.png',
+  './icon-512.png',
+  './manifest.webmanifest',
+];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL)));
