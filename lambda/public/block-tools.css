@@ -1,0 +1,15 @@
+.block-code { position: absolute; top: 9px; left: 10px; z-index: 2; min-width: 52px; height: 25px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--muted); font: 700 .66rem/1 monospace; letter-spacing: .08em; cursor: pointer; }
+.block-code:hover { border-color: var(--accent); color: var(--accent); }
+.csv-block { padding-top: 44px; overflow: hidden; }
+.csv-toolbar { padding: 10px 12px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; border-bottom: 1px solid var(--line); background: #fafafd; }
+.csv-toolbar strong { margin-right: auto; font-size: .76rem; }
+.csv-toolbar .secondary-button { min-height: 32px; padding: 0 9px; font-size: .68rem; }
+.csv-table-wrap { width: 100%; overflow: auto; }
+.csv-editor-table { width: 100%; border-collapse: collapse; table-layout: auto; background: #fff; }
+.csv-editor-table th, .csv-editor-table td { min-width: 130px; padding: 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.csv-editor-table th { background: #f6f6fa; }
+.csv-editor-table input { width: 100%; min-width: 130px; height: 38px; padding: 0 10px; border: 0; outline: 0; background: transparent; font: inherit; font-size: .76rem; }
+.csv-editor-table th input { font-weight: 750; }
+.csv-editor-table input:focus { box-shadow: inset 0 0 0 2px var(--accent); background: #fff; }
+.csv-block > .block-controls { top: 8px; }
+@media (max-width: 640px) { .csv-toolbar strong { width: 100%; } .csv-editor-table th, .csv-editor-table td, .csv-editor-table input { min-width: 110px; } }
