@@ -1,5 +1,8 @@
 .block-code { position: absolute; top: 9px; left: 10px; z-index: 2; min-width: 52px; height: 25px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--muted); font: 700 .66rem/1 monospace; letter-spacing: .08em; cursor: pointer; }
 .block-code:hover { border-color: var(--accent); color: var(--accent); }
+.block-card:not(.code-block):not(.csv-block) textarea.block-content { padding-left: 76px; }
+.block-card:not(.code-block):not(.csv-block) .heading-input { padding-left: 76px; }
+.code-block .code-toolbar { padding-left: 76px; }
 .csv-block { padding-top: 44px; overflow: hidden; }
 .csv-toolbar { padding: 10px 12px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; border-bottom: 1px solid var(--line); background: #fafafd; }
 .csv-toolbar strong { margin-right: auto; font-size: .76rem; }
