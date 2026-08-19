@@ -32,6 +32,12 @@ function blockCodeCandidate() {
   return code;
 }
 
+function normalizeLegacyBlock(block) {
+  if (!block || block.type !== 'heading') return block;
+  const { level, ...rest } = block;
+  return { ...rest, type: 'text' };
+}
+
 class SqliteSessionStore {
   constructor(db) { this.db = db; }
   get(token) { return this.db.prepare('SELECT expires_at FROM sessions WHERE token_hash = ?').get(sessionDigest(token))?.expires_at; }
@@ -104,7 +110,7 @@ export class SnippetDatabase {
       categoryId: row.category_id ?? null,
       category: row.category ?? null,
       tags: parseJson(row.tags_json, []),
-      blocks: this.decodeBlocks(row.id, row.blocks_json),
+      blocks: this.decodeBlocks(row.id, row.blocks_json).map(normalizeLegacyBlock),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       deletedAt: row.deleted_at,
@@ -290,9 +296,10 @@ export class SnippetDatabase {
     const target = this.getBlock(code);
     if (!target) return null;
     const current = target.block;
-    const type = changes.type === undefined ? current.type : String(changes.type);
-    if (!['text', 'heading', 'code', 'csv'].includes(type)) {
-      const error = new Error('Direct block updates support text, heading, code, and csv blocks.');
+    const requestedType = changes.type === undefined ? current.type : String(changes.type);
+    const type = requestedType === 'heading' ? 'text' : requestedType;
+    if (!['text', 'code', 'csv'].includes(type)) {
+      const error = new Error('Direct block updates support text, code, and csv blocks.');
       error.statusCode = 400;
       throw error;
     }
@@ -302,9 +309,8 @@ export class SnippetDatabase {
       error.statusCode = 400;
       throw error;
     }
-    let replacement = { id: current.id, code: current.code, type, content };
+    const replacement = { id: current.id, code: current.code, type, content };
     if (type === 'code') replacement.language = String(changes.language ?? current.language ?? 'powershell').slice(0, 40);
-    if (type === 'heading') replacement.level = Math.min(3, Math.max(1, Number(changes.level ?? current.level) || 2));
 
     const note = this.getNote(target.noteId);
     const blocks = note.blocks.map((block) => block.id === current.id ? replacement : block);
@@ -350,7 +356,7 @@ export class SnippetDatabase {
       title: this.decodeVersionTitle(noteId, row.version_key, row.title),
       category: row.category,
       tags: parseJson(row.tags_json, []),
-      blocks: this.decodeVersionBlocks(noteId, row.version_key, row.blocks_json),
+      blocks: this.decodeVersionBlocks(noteId, row.version_key, row.blocks_json).map(normalizeLegacyBlock),
       createdAt: row.created_at,
     }));
   }
@@ -390,7 +396,7 @@ export class SnippetDatabase {
     const version = this.db.prepare(`SELECT id, version_key, title, category, tags_json, blocks_json FROM versions WHERE id = ? AND note_id = ?`).get(versionId, noteId);
     if (!current || !version || current.deletedAt) return null;
     const title = this.decodeVersionTitle(noteId, version.version_key, version.title);
-    const restoredBlocks = this.decodeVersionBlocks(noteId, version.version_key, version.blocks_json);
+    const restoredBlocks = this.decodeVersionBlocks(noteId, version.version_key, version.blocks_json).map(normalizeLegacyBlock);
     const currentById = new Map(current.blocks.map((block) => [block.id, block]));
     const blocks = restoredBlocks.map((block) => ({ ...block, code: currentById.get(block.id)?.code || block.code }));
     this.transaction(() => {
