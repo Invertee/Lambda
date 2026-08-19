@@ -42,7 +42,9 @@ function parseCsv(text) {
     rows.push(row);
   }
   const width = Math.max(1, ...rows.map((item) => item.length));
-  return rows.map((item) => [...item, ...Array(width - item.length).fill('')]);
+  const normalized = rows.map((item) => [...item, ...Array(width - item.length).fill('')]);
+  if (normalized.length === 1) normalized.push(Array(width).fill(''));
+  return normalized;
 }
 
 function serializeCsv(rows) {
@@ -266,9 +268,12 @@ function ensureBlockControls(card) {
   if (controls) return controls;
   controls = document.createElement('div');
   controls.className = 'block-controls csv-generated-controls';
+  const drag = actionButton('drag', '⠿', 'Drag to reorder');
+  drag.classList.add('drag-handle');
   controls.append(
     actionButton('move-up', '↑', 'Move block up'),
     actionButton('move-down', '↓', 'Move block down'),
+    drag,
     actionButton('remove', '×', 'Remove block'),
   );
   card.append(controls);
@@ -332,7 +337,7 @@ function enhanceCsv(card, block) {
   });
 
   const removeRow = editingButton('Remove row', () => {
-    if (rows.length <= 1) return;
+    if (rows.length <= 2) return;
     rows.pop();
     renderTableBody(card, rows, tableState);
     syncSource(card, rows);
@@ -393,6 +398,7 @@ function addCodeBadge(card, block) {
 function enhanceCards() {
   let missing = false;
   document.querySelectorAll('#blocks [data-block-id]').forEach((card) => {
+    card.draggable = false;
     let block = blockMap.get(card.dataset.blockId);
     if (!block && pendingCsv) {
       block = { id: card.dataset.blockId, type: 'csv', content: '' };
@@ -443,7 +449,17 @@ function boot() {
   addCsvButton();
   refreshBlocks();
   const blocks = document.querySelector('#blocks');
-  if (blocks) new MutationObserver(enhanceCards).observe(blocks, { childList: true });
+  if (blocks) {
+    blocks.addEventListener('pointerdown', (event) => {
+      const card = event.target.closest('[data-block-id]');
+      if (!card || offline()) return;
+      card.draggable = Boolean(event.target.closest('.drag-handle'));
+    }, true);
+    blocks.addEventListener('dragend', () => {
+      blocks.querySelectorAll('[data-block-id]').forEach((card) => { card.draggable = false; });
+    }, true);
+    new MutationObserver(enhanceCards).observe(blocks, { childList: true });
+  }
   const save = document.querySelector('#save-status');
   if (save) new MutationObserver(() => {
     if (save.textContent.includes('Saved')) scheduleRefresh();
