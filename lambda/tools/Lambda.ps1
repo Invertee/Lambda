@@ -243,29 +243,25 @@ function New-LambdaNote {
     process {
         if ($null -eq $Content) {
             $contentParts.Add($null)
-            return
         }
-
-        if ($Content -is [string] -or $Content -is [System.Collections.IDictionary]) {
+        elseif ($Content -is [string] -or $Content -is [System.Collections.IDictionary]) {
             $contentParts.Add($Content)
             if ($Content -isnot [string]) {
                 $hasStructuredInput = $true
             }
-            return
         }
-
-        if ($Content -is [System.Collections.IEnumerable]) {
+        elseif ($Content -is [System.Collections.IEnumerable]) {
             foreach ($item in $Content) {
                 $contentParts.Add($item)
                 if ($null -ne $item -and $item -isnot [string]) {
                     $hasStructuredInput = $true
                 }
             }
-            return
         }
-
-        $contentParts.Add($Content)
-        $hasStructuredInput = $true
+        else {
+            $contentParts.Add($Content)
+            $hasStructuredInput = $true
+        }
     }
 
     end {
@@ -397,29 +393,25 @@ function Set-LambdaBlock {
     process {
         if ($null -eq $InputObject) {
             $items.Add($null)
-            return
         }
-
-        if ($InputObject -is [string] -or $InputObject -is [System.Collections.IDictionary]) {
+        elseif ($InputObject -is [string] -or $InputObject -is [System.Collections.IDictionary]) {
             $items.Add($InputObject)
             if ($InputObject -isnot [string]) {
                 $hasStructuredInput = $true
             }
-            return
         }
-
-        if ($InputObject -is [System.Collections.IEnumerable]) {
+        elseif ($InputObject -is [System.Collections.IEnumerable]) {
             foreach ($item in $InputObject) {
                 $items.Add($item)
                 if ($null -ne $item -and $item -isnot [string]) {
                     $hasStructuredInput = $true
                 }
             }
-            return
         }
-
-        $items.Add($InputObject)
-        $hasStructuredInput = $true
+        else {
+            $items.Add($InputObject)
+            $hasStructuredInput = $true
+        }
     }
 
     end {
