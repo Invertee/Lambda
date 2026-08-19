@@ -1,6 +1,6 @@
 {
   "name": "lambda-notes",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "private": true,
   "type": "module",
   "description": "Lambda, a self-hosted block-based notes and script library.",
