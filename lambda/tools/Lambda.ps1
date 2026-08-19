@@ -1,4 +1,4 @@
-$script:LambdaHelperVersion = '1.2.4'
+$script:LambdaHelperVersion = '1.2.5'
 $script:LambdaHelperPath = $PSCommandPath
 
 if (-not (Get-Variable -Name LambdaConnection -Scope Global -ErrorAction SilentlyContinue)) {
@@ -162,12 +162,26 @@ function ConvertTo-LambdaDisplayObject {
         return [pscustomobject]@{ Value = $InputObject }
     }
 
-    $propertyNames = @($InputObject.PSStandardMembers.DefaultDisplayPropertySet.ReferencedPropertyNames)
+    $propertyNames = @()
+    $defaultDisplaySet = $InputObject.PSStandardMembers.DefaultDisplayPropertySet
+    if ($null -ne $defaultDisplaySet) {
+        $propertyNames = @(
+            $defaultDisplaySet.ReferencedPropertyNames |
+                Where-Object { $_ -is [string] -and -not [string]::IsNullOrWhiteSpace($_) } |
+                Select-Object -Unique
+        )
+    }
+
     if (-not $propertyNames.Count) {
         $propertyNames = @(
             $InputObject.PSObject.Properties |
-                Where-Object { $_.IsGettable -and $_.MemberType -in @('AliasProperty', 'CodeProperty', 'NoteProperty', 'Property', 'ScriptProperty') } |
-                ForEach-Object { $_.Name }
+                Where-Object {
+                    $_.IsGettable -and
+                    $_.MemberType -in @('AliasProperty', 'CodeProperty', 'NoteProperty', 'Property', 'ScriptProperty') -and
+                    -not [string]::IsNullOrWhiteSpace($_.Name)
+                } |
+                ForEach-Object { $_.Name } |
+                Select-Object -Unique
         )
     }
 
@@ -177,14 +191,28 @@ function ConvertTo-LambdaDisplayObject {
 
     $row = [ordered]@{}
     foreach ($propertyName in $propertyNames) {
+        if ([string]::IsNullOrWhiteSpace($propertyName)) {
+            continue
+        }
+
+        $property = $InputObject.PSObject.Properties[$propertyName]
+        if ($null -eq $property) {
+            $row[$propertyName] = ''
+            continue
+        }
+
         try {
-            $property = $InputObject.PSObject.Properties[$propertyName]
             $row[$propertyName] = ConvertTo-LambdaCellValue -Value $property.Value
         }
         catch {
             $row[$propertyName] = ''
         }
     }
+
+    if (-not $row.Count) {
+        return [pscustomobject]@{ Value = [string] $InputObject }
+    }
+
     return [pscustomobject] $row
 }
 
