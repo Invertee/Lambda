@@ -1,4 +1,4 @@
-$script:LambdaHelperVersion = '1.2.5'
+$script:LambdaHelperVersion = '1.2.7'
 $script:LambdaHelperPath = $PSCommandPath
 
 if (-not (Get-Variable -Name LambdaConnection -Scope Global -ErrorAction SilentlyContinue)) {
@@ -253,7 +253,7 @@ function New-LambdaNote {
         [AllowNull()]
         [object] $Content = '',
 
-        [ValidateSet('auto', 'text', 'heading', 'code', 'csv')]
+        [ValidateSet('auto', 'text', 'code', 'csv')]
         [string] $BlockType = 'auto',
 
         [string] $Language = 'powershell',
@@ -315,9 +315,6 @@ function New-LambdaNote {
         }
         if ($effectiveBlockType -eq 'code') {
             $block.language = $Language
-        }
-        if ($effectiveBlockType -eq 'heading') {
-            $block.level = 2
         }
 
         $body = [ordered]@{
@@ -401,7 +398,7 @@ function Set-LambdaBlock {
         [AllowNull()]
         [object] $InputObject,
 
-        [ValidateSet('text', 'heading', 'code', 'csv')]
+        [ValidateSet('text', 'code', 'csv')]
         [string] $BlockType,
 
         [string] $Language,
