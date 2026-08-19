@@ -10,10 +10,9 @@ const blockSchema = {
   properties: {
     id: { type: 'string', description: 'Optional stable block ID.' },
     code: { type: 'string', pattern: '^[A-Za-z0-9]{5}$', description: 'Server-assigned five-character block code.' },
-    type: { type: 'string', enum: ['text', 'heading', 'code', 'csv'], description: 'Block type.' },
+    type: { type: 'string', enum: ['text', 'code', 'csv'], description: 'Block type.' },
     content: { type: 'string', description: 'Block text, source code, or CSV content.' },
     language: { type: 'string', description: 'Language identifier for a code block.' },
-    level: { type: 'integer', minimum: 1, maximum: 3, description: 'Heading level.' },
   },
   required: ['type', 'content'],
 };
@@ -23,8 +22,8 @@ const noteFields = {
   category: { type: 'string', maxLength: 80, description: 'Category name. It is created automatically if needed.' },
   tags: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 40 } },
   blocks: { type: 'array', maxItems: 100, items: blockSchema, description: 'Complete ordered block list.' },
-  content: { type: 'string', description: 'Convenience alternative to blocks for a single text, code, heading, or CSV block.' },
-  content_type: { type: 'string', enum: ['text', 'heading', 'code', 'csv'], description: 'Type used with content. Defaults to text.' },
+  content: { type: 'string', description: 'Convenience alternative to blocks for a single text, code, or CSV block.' },
+  content_type: { type: 'string', enum: ['text', 'code', 'csv'], description: 'Type used with content. Defaults to text.' },
   language: { type: 'string', description: 'Language used when content_type is code.' },
 };
 
@@ -72,15 +71,14 @@ export const MCP_TOOLS = [
   {
     name: 'update_block',
     title: 'Update a block by code',
-    description: 'Replace the content of an active text, heading, code, or CSV block using its five-character code. Set type to csv when supplying CSV table data.',
+    description: 'Replace the content of an active text, code, or CSV block using its five-character code. Set type to csv when supplying CSV table data.',
     inputSchema: {
       type: 'object',
       properties: {
         code: { type: 'string', pattern: '^[A-Za-z0-9]{5}$' },
         content: { type: 'string' },
-        type: { type: 'string', enum: ['text', 'heading', 'code', 'csv'] },
+        type: { type: 'string', enum: ['text', 'code', 'csv'] },
         language: { type: 'string' },
-        level: { type: 'integer', minimum: 1, maximum: 3 },
       },
       required: ['code', 'content'],
       additionalProperties: false,
@@ -185,7 +183,6 @@ function blocksFromArguments(args) {
   const type = args.content_type || 'text';
   const block = { type, content: String(args.content || '') };
   if (type === 'code') block.language = args.language || 'powershell';
-  if (type === 'heading') block.level = 2;
   return [block];
 }
 
@@ -232,7 +229,6 @@ const toolHandlers = {
     content: args.content,
     ...(args.type !== undefined ? { type: args.type } : {}),
     ...(args.language !== undefined ? { language: args.language } : {}),
-    ...(args.level !== undefined ? { level: args.level } : {}),
   }), 'Active block not found.'),
   create_note: createNote,
   update_note: updateNote,
@@ -285,7 +281,7 @@ export function processMcpMessage(database, message) {
         resultType: 'complete',
         supportedVersions: SUPPORTED_PROTOCOL_VERSIONS,
         capabilities: { tools: {} },
-        serverInfo: { name: 'lambda-notes', version: '1.2.0' },
+        serverInfo: { name: 'lambda-notes', version: '1.2.7' },
         instructions: 'Use note and block tools to search, create, update, categorise, soft-delete, restore, and address individual Lambda blocks by code.',
       }),
     };
@@ -299,7 +295,7 @@ export function processMcpMessage(database, message) {
       body: result(message.id, {
         protocolVersion,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: 'lambda-notes', version: '1.2.0' },
+        serverInfo: { name: 'lambda-notes', version: '1.2.7' },
         instructions: 'Use note and block tools to search, create, update, categorise, soft-delete, restore, and address individual Lambda blocks by code.',
       }),
     };
