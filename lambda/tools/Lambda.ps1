@@ -1,24 +1,223 @@
+$script:LambdaHelperVersion = '1.2.4'
+$script:LambdaHelperPath = $PSCommandPath
+
+if (-not (Get-Variable -Name LambdaConnection -Scope Global -ErrorAction SilentlyContinue)) {
+    $Global:LambdaConnection = [ordered]@{
+        Uri    = $env:LAMBDA_URL
+        ApiKey = $env:LAMBDA_API_KEY
+    }
+}
+
+function Set-LambdaConnection {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string] $Uri,
+
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string] $ApiKey
+    )
+
+    $Global:LambdaConnection = [ordered]@{
+        Uri    = $Uri.TrimEnd('/')
+        ApiKey = $ApiKey
+    }
+}
+
+function Install-LambdaProfile {
+    <#
+    .SYNOPSIS
+    Adds Lambda to the current PowerShell profile with a saved URL and API key.
+
+    .EXAMPLE
+    Install-LambdaProfile -Uri 'https://notes.example.com' -ApiKey $api
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string] $Uri,
+
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string] $ApiKey,
+
+        [string] $HelperPath = $script:LambdaHelperPath,
+
+        [string] $ProfilePath = $PROFILE
+    )
+
+    if ([string]::IsNullOrWhiteSpace($HelperPath)) {
+        throw 'Lambda.ps1 must be saved to disk before it can be added to your profile.'
+    }
+
+    $resolvedHelper = (Resolve-Path -LiteralPath $HelperPath -ErrorAction Stop).Path
+    $profileDirectory = Split-Path -Parent $ProfilePath
+    if (-not (Test-Path -LiteralPath $profileDirectory)) {
+        New-Item -ItemType Directory -Path $profileDirectory -Force | Out-Null
+    }
+
+    $escapedHelper = $resolvedHelper.Replace("'", "''")
+    $escapedUri = $Uri.TrimEnd('/').Replace("'", "''")
+    $escapedApiKey = $ApiKey.Replace("'", "''")
+    $startMarker = '# Lambda helper start'
+    $endMarker = '# Lambda helper end'
+    $profileBlock = @"
+$startMarker
+. '$escapedHelper'
+Set-LambdaConnection -Uri '$escapedUri' -ApiKey '$escapedApiKey'
+$endMarker
+"@
+
+    $existing = if (Test-Path -LiteralPath $ProfilePath) {
+        Get-Content -LiteralPath $ProfilePath -Raw
+    }
+    else {
+        ''
+    }
+
+    $pattern = '(?s)' + [regex]::Escape($startMarker) + '.*?' + [regex]::Escape($endMarker)
+    if ($existing -match $pattern) {
+        $updated = [regex]::Replace($existing, $pattern, $profileBlock)
+    }
+    elseif ([string]::IsNullOrWhiteSpace($existing)) {
+        $updated = $profileBlock
+    }
+    else {
+        $updated = $existing.TrimEnd() + [Environment]::NewLine + [Environment]::NewLine + $profileBlock
+    }
+
+    Set-Content -LiteralPath $ProfilePath -Value $updated -Encoding utf8
+    Set-LambdaConnection -Uri $Uri -ApiKey $ApiKey
+}
+
+function Resolve-LambdaConnection {
+    param(
+        [string] $Uri,
+        [string] $ApiKey
+    )
+
+    $resolvedUri = $Uri
+    if ([string]::IsNullOrWhiteSpace($resolvedUri)) {
+        $resolvedUri = $Global:LambdaConnection.Uri
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedUri)) {
+        $resolvedUri = $env:LAMBDA_URL
+    }
+
+    $resolvedApiKey = $ApiKey
+    if ([string]::IsNullOrWhiteSpace($resolvedApiKey)) {
+        $resolvedApiKey = $Global:LambdaConnection.ApiKey
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedApiKey)) {
+        $resolvedApiKey = $env:LAMBDA_API_KEY
+    }
+
+    if ([string]::IsNullOrWhiteSpace($resolvedUri)) {
+        throw 'Set the Lambda URL with Set-LambdaConnection, -Uri, or LAMBDA_URL.'
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedApiKey)) {
+        throw 'Set the Lambda API key with Set-LambdaConnection, -ApiKey, or LAMBDA_API_KEY.'
+    }
+
+    [pscustomobject]@{
+        Uri    = $resolvedUri.TrimEnd('/')
+        ApiKey = $resolvedApiKey
+    }
+}
+
+function ConvertTo-LambdaCellValue {
+    param(
+        [AllowNull()]
+        [object] $Value
+    )
+
+    if ($null -eq $Value) {
+        return ''
+    }
+    if ($Value -is [string]) {
+        return $Value
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        return (($Value.GetEnumerator() | ForEach-Object { '{0}={1}' -f $_.Key, $_.Value }) -join '; ')
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        return ((@($Value) | ForEach-Object { [string] $_ }) -join '; ')
+    }
+    return $Value
+}
+
+function ConvertTo-LambdaDisplayObject {
+    param(
+        [AllowNull()]
+        [object] $InputObject
+    )
+
+    if ($null -eq $InputObject) {
+        return [pscustomobject]@{ Value = '' }
+    }
+    if ($InputObject -is [string]) {
+        return [pscustomobject]@{ Value = $InputObject }
+    }
+
+    $propertyNames = @($InputObject.PSStandardMembers.DefaultDisplayPropertySet.ReferencedPropertyNames)
+    if (-not $propertyNames.Count) {
+        $propertyNames = @(
+            $InputObject.PSObject.Properties |
+                Where-Object { $_.IsGettable -and $_.MemberType -in @('AliasProperty', 'CodeProperty', 'NoteProperty', 'Property', 'ScriptProperty') } |
+                ForEach-Object { $_.Name }
+        )
+    }
+
+    if (-not $propertyNames.Count) {
+        return [pscustomobject]@{ Value = [string] $InputObject }
+    }
+
+    $row = [ordered]@{}
+    foreach ($propertyName in $propertyNames) {
+        try {
+            $property = $InputObject.PSObject.Properties[$propertyName]
+            $row[$propertyName] = ConvertTo-LambdaCellValue -Value $property.Value
+        }
+        catch {
+            $row[$propertyName] = ''
+        }
+    }
+    return [pscustomobject] $row
+}
+
+function ConvertTo-LambdaCsvContent {
+    param(
+        [object[]] $Items
+    )
+
+    $rows = @($Items | ForEach-Object { ConvertTo-LambdaDisplayObject -InputObject $_ })
+    return (($rows | ConvertTo-Csv -NoTypeInformation) -join [Environment]::NewLine)
+}
+
 function New-LambdaNote {
     <#
     .SYNOPSIS
     Posts a new note to Lambda using its static API key.
 
     .EXAMPLE
-    New-LambdaNote -Title 'Restart service' -Category 'PowerShell' -Tags admin,windows `
-        -BlockType code -Language powershell -Content 'Restart-Service Spooler'
+    Get-NetAdapter | New-Snip -Name 'net adaptors'
 
     .EXAMPLE
-    Get-Service | Select-Object Name, Status | New-LambdaNote -Title 'Service state' `
-        -Category 'Diagnostics' -BlockType csv
+    New-Snip -Name 'Restart service' -Category 'PowerShell' -BlockType code `
+        -Language powershell -Content 'Restart-Service Spooler'
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
+        [Parameter(Mandatory, Position = 0)]
+        [Alias('Name')]
         [ValidateNotNullOrEmpty()]
         [string] $Title,
 
         [ValidateNotNullOrEmpty()]
-        [string] $Category = 'General',
+        [string] $Category = 'Snippets',
 
         [string[]] $Tags = @(),
 
@@ -26,48 +225,74 @@ function New-LambdaNote {
         [AllowNull()]
         [object] $Content = '',
 
-        [ValidateSet('text', 'heading', 'code', 'csv')]
-        [string] $BlockType = 'text',
+        [ValidateSet('auto', 'text', 'heading', 'code', 'csv')]
+        [string] $BlockType = 'auto',
 
         [string] $Language = 'powershell',
 
-        [string] $Uri = $env:LAMBDA_URL,
+        [string] $Uri,
 
-        [string] $ApiKey = $env:LAMBDA_API_KEY
+        [string] $ApiKey
     )
 
     begin {
         $contentParts = [System.Collections.Generic.List[object]]::new()
+        $hasStructuredInput = $false
     }
 
     process {
+        if ($null -eq $Content) {
+            $contentParts.Add($null)
+            return
+        }
+
+        if ($Content -is [string] -or $Content -is [System.Collections.IDictionary]) {
+            $contentParts.Add($Content)
+            if ($Content -isnot [string]) {
+                $hasStructuredInput = $true
+            }
+            return
+        }
+
+        if ($Content -is [System.Collections.IEnumerable]) {
+            foreach ($item in $Content) {
+                $contentParts.Add($item)
+                if ($null -ne $item -and $item -isnot [string]) {
+                    $hasStructuredInput = $true
+                }
+            }
+            return
+        }
+
         $contentParts.Add($Content)
+        $hasStructuredInput = $true
     }
 
     end {
-        if ([string]::IsNullOrWhiteSpace($Uri)) {
-            throw 'Set -Uri or the LAMBDA_URL environment variable.'
-        }
-        if ([string]::IsNullOrWhiteSpace($ApiKey)) {
-            throw 'Set -ApiKey or the LAMBDA_API_KEY environment variable.'
-        }
-
-        if ($BlockType -eq 'csv' -and ($contentParts | Where-Object { $_ -isnot [string] }).Count -gt 0) {
-            $blockContent = ($contentParts | ConvertTo-Csv -NoTypeInformation) -join [Environment]::NewLine
+        $connection = Resolve-LambdaConnection -Uri $Uri -ApiKey $ApiKey
+        $effectiveBlockType = if ($BlockType -eq 'auto') {
+            if ($hasStructuredInput) { 'csv' } else { 'text' }
         }
         else {
-            $blockContent = ($contentParts | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+            $BlockType
+        }
+
+        if ($effectiveBlockType -eq 'csv' -and $hasStructuredInput) {
+            $blockContent = ConvertTo-LambdaCsvContent -Items @($contentParts)
+        }
+        else {
+            $blockContent = ($contentParts | ForEach-Object { [string] $_ }) -join [Environment]::NewLine
         }
 
         $block = [ordered]@{
             id      = [guid]::NewGuid().ToString()
-            type    = $BlockType
+            type    = $effectiveBlockType
             content = $blockContent
         }
-        if ($BlockType -eq 'code') {
+        if ($effectiveBlockType -eq 'code') {
             $block.language = $Language
         }
-        if ($BlockType -eq 'heading') {
+        if ($effectiveBlockType -eq 'heading') {
             $block.level = 2
         }
 
@@ -79,9 +304,9 @@ function New-LambdaNote {
         } | ConvertTo-Json -Depth 10
 
         Invoke-RestMethod `
-            -Uri ('{0}/api/notes' -f $Uri.TrimEnd('/')) `
+            -Uri ('{0}/api/notes' -f $connection.Uri) `
             -Method Post `
-            -Headers @{ Authorization = "Bearer $ApiKey" } `
+            -Headers @{ Authorization = "Bearer $($connection.ApiKey)" } `
             -ContentType 'application/json; charset=utf-8' `
             -Body $body
     }
@@ -93,17 +318,14 @@ function Get-LambdaBlock {
     Retrieves a Lambda block using its five-character code.
 
     .EXAMPLE
-    Get-LambdaBlock -Code A1B2C
+    Get-Snip A1B2C
 
     .EXAMPLE
-    Get-LambdaBlock -Code A1B2C -ContentOnly
-
-    .EXAMPLE
-    Get-LambdaBlock -Code A1B2C -AsTable
+    Get-Snip A1B2C -AsTable
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
+        [Parameter(Mandatory, Position = 0)]
         [ValidatePattern('^[A-Za-z0-9]{5}$')]
         [string] $Code,
 
@@ -111,22 +333,16 @@ function Get-LambdaBlock {
 
         [switch] $AsTable,
 
-        [string] $Uri = $env:LAMBDA_URL,
+        [string] $Uri,
 
-        [string] $ApiKey = $env:LAMBDA_API_KEY
+        [string] $ApiKey
     )
 
-    if ([string]::IsNullOrWhiteSpace($Uri)) {
-        throw 'Set -Uri or the LAMBDA_URL environment variable.'
-    }
-    if ([string]::IsNullOrWhiteSpace($ApiKey)) {
-        throw 'Set -ApiKey or the LAMBDA_API_KEY environment variable.'
-    }
-
+    $connection = Resolve-LambdaConnection -Uri $Uri -ApiKey $ApiKey
     $result = Invoke-RestMethod `
-        -Uri ('{0}/api/blocks/{1}' -f $Uri.TrimEnd('/'), $Code.ToUpperInvariant()) `
+        -Uri ('{0}/api/blocks/{1}' -f $connection.Uri, $Code.ToUpperInvariant()) `
         -Method Get `
-        -Headers @{ Authorization = "Bearer $ApiKey" }
+        -Headers @{ Authorization = "Bearer $($connection.ApiKey)" }
 
     if ($AsTable) {
         if ($result.block.type -ne 'csv') {
@@ -146,14 +362,14 @@ function Set-LambdaBlock {
     Replaces the content of a Lambda block using its five-character code.
 
     .EXAMPLE
-    Get-Content .\output.txt | Set-LambdaBlock -Code A1B2C
+    Get-NetAdapter | Set-Snip A1B2C
 
     .EXAMPLE
-    Get-Process | Select-Object Name, Id, CPU | Set-LambdaBlock -Code C3D4E -AsCsv
+    Get-Content .\output.txt | Set-Snip A1B2C
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
+        [Parameter(Mandatory, Position = 0)]
         [ValidatePattern('^[A-Za-z0-9]{5}$')]
         [string] $Code,
 
@@ -168,33 +384,53 @@ function Set-LambdaBlock {
 
         [switch] $AsCsv,
 
-        [string] $Uri = $env:LAMBDA_URL,
+        [string] $Uri,
 
-        [string] $ApiKey = $env:LAMBDA_API_KEY
+        [string] $ApiKey
     )
 
     begin {
         $items = [System.Collections.Generic.List[object]]::new()
+        $hasStructuredInput = $false
     }
 
     process {
+        if ($null -eq $InputObject) {
+            $items.Add($null)
+            return
+        }
+
+        if ($InputObject -is [string] -or $InputObject -is [System.Collections.IDictionary]) {
+            $items.Add($InputObject)
+            if ($InputObject -isnot [string]) {
+                $hasStructuredInput = $true
+            }
+            return
+        }
+
+        if ($InputObject -is [System.Collections.IEnumerable]) {
+            foreach ($item in $InputObject) {
+                $items.Add($item)
+                if ($null -ne $item -and $item -isnot [string]) {
+                    $hasStructuredInput = $true
+                }
+            }
+            return
+        }
+
         $items.Add($InputObject)
+        $hasStructuredInput = $true
     }
 
     end {
-        if ([string]::IsNullOrWhiteSpace($Uri)) {
-            throw 'Set -Uri or the LAMBDA_URL environment variable.'
-        }
-        if ([string]::IsNullOrWhiteSpace($ApiKey)) {
-            throw 'Set -ApiKey or the LAMBDA_API_KEY environment variable.'
-        }
+        $connection = Resolve-LambdaConnection -Uri $Uri -ApiKey $ApiKey
+        $useCsv = $AsCsv -or $BlockType -eq 'csv' -or (-not $PSBoundParameters.ContainsKey('BlockType') -and $hasStructuredInput)
 
-        $useCsv = $AsCsv -or $BlockType -eq 'csv'
-        if ($useCsv -and ($items | Where-Object { $_ -isnot [string] }).Count -gt 0) {
-            $content = ($items | ConvertTo-Csv -NoTypeInformation) -join [Environment]::NewLine
+        if ($useCsv -and $hasStructuredInput) {
+            $content = ConvertTo-LambdaCsvContent -Items @($items)
         }
         else {
-            $content = ($items | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+            $content = ($items | ForEach-Object { [string] $_ }) -join [Environment]::NewLine
         }
 
         $body = [ordered]@{ content = $content }
@@ -209,10 +445,14 @@ function Set-LambdaBlock {
         }
 
         Invoke-RestMethod `
-            -Uri ('{0}/api/blocks/{1}' -f $Uri.TrimEnd('/'), $Code.ToUpperInvariant()) `
+            -Uri ('{0}/api/blocks/{1}' -f $connection.Uri, $Code.ToUpperInvariant()) `
             -Method Put `
-            -Headers @{ Authorization = "Bearer $ApiKey" } `
+            -Headers @{ Authorization = "Bearer $($connection.ApiKey)" } `
             -ContentType 'application/json; charset=utf-8' `
             -Body ($body | ConvertTo-Json -Depth 5)
     }
 }
+
+Set-Alias -Name New-Snip -Value New-LambdaNote -Scope Global -Force
+Set-Alias -Name Get-Snip -Value Get-LambdaBlock -Scope Global -Force
+Set-Alias -Name Set-Snip -Value Set-LambdaBlock -Scope Global -Force
