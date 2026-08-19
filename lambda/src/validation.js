@@ -59,8 +59,8 @@ export function validateNote(input, { partial = false } = {}) {
   const seenBlockIds = new Set();
   result.blocks = blocks.map((block) => {
     if (!block || typeof block !== 'object') throw new ValidationError('Every block must be an object.');
-    const type = block.type;
-    if (!['text', 'heading', 'code', 'csv', 'image', 'file'].includes(type)) throw new ValidationError('Unsupported block type.');
+    const type = block.type === 'heading' ? 'text' : block.type;
+    if (!['text', 'code', 'csv', 'image', 'file'].includes(type)) throw new ValidationError('Unsupported block type.');
     const id = typeof block.id === 'string' && block.id.length <= 100 ? block.id : randomUUID();
     if (seenBlockIds.has(id)) throw new ValidationError('Block IDs must be unique within a note.');
     seenBlockIds.add(id);
@@ -95,9 +95,6 @@ export function validateNote(input, { partial = false } = {}) {
     if (content.length > 1_000_000) throw new ValidationError('A content block is too large.');
     if (type === 'code') {
       return withCode({ id, type, content, language: text(String(block.language || 'powershell'), 40, 'Language') }, code);
-    }
-    if (type === 'heading') {
-      return withCode({ id, type, content, level: Math.min(3, Math.max(1, Number(block.level) || 2)) }, code);
     }
     return withCode({ id, type, content }, code);
   });
