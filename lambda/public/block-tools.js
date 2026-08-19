@@ -445,8 +445,34 @@ function addCsvButton() {
   adder.insertBefore(button, image || null);
 }
 
+function addBackToTopButton() {
+  if (document.querySelector('[data-back-to-top]')) return;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'back-to-top';
+  button.dataset.backToTop = '';
+  button.title = 'Return to top';
+  button.setAttribute('aria-label', 'Return to top');
+  button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14 6-6 6 6"/></svg>';
+
+  const updateVisibility = () => {
+    const appVisible = !document.querySelector('#app-shell')?.classList.contains('hidden');
+    button.classList.toggle('visible', appVisible && window.scrollY > 480);
+  };
+
+  button.addEventListener('click', () => {
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    window.scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' });
+  });
+  window.addEventListener('scroll', updateVisibility, { passive: true });
+  window.addEventListener('resize', updateVisibility);
+  document.body.append(button);
+  updateVisibility();
+}
+
 function boot() {
   addCsvButton();
+  addBackToTopButton();
   refreshBlocks();
   const blocks = document.querySelector('#blocks');
   if (blocks) {
