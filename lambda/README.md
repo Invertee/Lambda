@@ -109,47 +109,66 @@ A block lookup returns its note context and the complete block:
 
 ### PowerShell helper
 
-Dot-source the bundled helper and set the endpoint and API key once:
+The bundled `tools/Lambda.ps1` helper can be loaded from your PowerShell profile so the Lambda URL and API key do not need to be supplied on every command. Dot-source the helper once, then install its profile block:
 
 ```powershell
-. ./tools/Lambda.ps1
-$env:LAMBDA_URL = 'https://notes.example.com'
-$env:LAMBDA_API_KEY = 'replace-with-your-random-key'
+. .\tools\Lambda.ps1
+Install-LambdaProfile -Uri 'https://notes.example.com' -ApiKey $api
 ```
 
-Create a normal code note:
+`Install-LambdaProfile` adds the helper path and `Set-LambdaConnection` call to the current `$PROFILE`. The API key is therefore stored as plaintext in the PowerShell profile file. You can also skip the installer and continue to use `LAMBDA_URL` and `LAMBDA_API_KEY` environment variables.
+
+The helper exposes the original commands plus shorter aliases:
+
+- `New-Snip` → `New-LambdaNote`
+- `Get-Snip` → `Get-LambdaBlock`
+- `Set-Snip` → `Set-LambdaBlock`
+
+`New-Snip` accepts `-Name` as an alias for `-Title` and defaults new notes to the `Snippets` category.
+
+Structured PowerShell pipeline objects automatically become CSV table blocks. Arrays passed through `-Content` are expanded into their individual objects instead of being serialised as `System.Object[]` metadata. Where PowerShell exposes a default display property set, Lambda uses those display properties as the table columns; otherwise the object's readable properties are used.
+
+For example:
 
 ```powershell
-New-LambdaNote -Title 'Restart service' -Category 'PowerShell' `
+Get-NetAdapter | New-Snip -Name 'net adaptors'
+```
+
+No `-Category`, `-BlockType`, `-Uri`, or `-ApiKey` parameters are required after the profile has been configured. String pipelines remain normal text blocks unless a block type is explicitly supplied.
+
+Create a code note explicitly:
+
+```powershell
+New-Snip -Name 'Restart service' -Category 'PowerShell' `
   -Tags admin,windows -BlockType code -Language powershell `
   -Content 'Restart-Service Spooler'
 ```
 
-Pipe PowerShell objects directly into a new CSV table block:
+An array can also be passed directly:
 
 ```powershell
-Get-Service | Select-Object Name, Status | New-LambdaNote `
-  -Title 'Service snapshot' -Category 'Diagnostics' -BlockType csv
+$adapters = Get-NetAdapter
+New-Snip -Name 'net adaptors' -Content $adapters
 ```
 
-Replace an existing block with command output:
+Replace an existing block with structured command output. Structured objects automatically convert the target to a CSV table:
 
 ```powershell
-Get-Content .\latest-output.txt | Set-LambdaBlock -Code A1B2C
+Get-Process | Select-Object Name, Id, CPU | Set-Snip C3D4E
 ```
 
-Pipe structured PowerShell objects into an existing CSV table block:
+Replace an existing block with normal text:
 
 ```powershell
-Get-Process | Select-Object Name, Id, CPU | Set-LambdaBlock -Code C3D4E -AsCsv
+Get-Content .\latest-output.txt | Set-Snip A1B2C
 ```
 
 Retrieve a block or convert a CSV block back into PowerShell objects:
 
 ```powershell
-Get-LambdaBlock -Code A1B2C
-Get-LambdaBlock -Code C3D4E -ContentOnly
-Get-LambdaBlock -Code C3D4E -AsTable
+Get-Snip A1B2C
+Get-Snip C3D4E -ContentOnly
+Get-Snip C3D4E -AsTable
 ```
 
 ## MCP endpoint
