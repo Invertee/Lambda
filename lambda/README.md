@@ -1,13 +1,13 @@
 # Lambda
 
-Lambda is a small, self-hosted notes and script library designed to run as a Home Assistant add-on. Notes are assembled from text, heading, code, CSV table, image, and file-attachment blocks. They autosave continuously and are organised with one-level categories and tags.
+Lambda is a small, self-hosted notes and script library designed to run as a Home Assistant add-on. Notes are assembled from text, code, CSV table, image, and file-attachment blocks. They autosave continuously and are organised with one-level categories and tags.
 
 ## Highlights
 
 - Single-user password authentication with rate limiting and secure, HTTP-only cookies that expire after 30 days of inactivity by default
 - AES-256-GCM encryption at rest for note titles, block content, version content, and attachments
 - Stable five-character alphanumeric codes on every block for direct REST, MCP, and script access
-- Text, heading, code, editable CSV table, compressed image, and disk-backed file-attachment blocks
+- Text, code, editable CSV table, compressed image, and disk-backed file-attachment blocks
 - CSV tables can be edited in the web interface and downloaded as standard `.csv` files
 - Drag, button-based reorder, remove, and one-click code copying or downloading
 - A language picker for code blocks, defaulting to PowerShell
@@ -47,6 +47,8 @@ Every block receives a globally unique five-character uppercase alphanumeric cod
 A code stays attached to the same block when its content changes or when the block is reordered. Codes are retained as tombstones when blocks are removed so they are not reassigned to a different block. Blocks inside notes in the recycle bin are unavailable through the block API; restoring the note reactivates the original codes.
 
 This makes a block a stable automation target without requiring the note UUID or block UUID.
+
+Legacy `heading` blocks from older Lambda versions are normalised to ordinary text blocks when loaded or validated, preserving their content while retiring the separate heading type.
 
 ## CSV table blocks
 
