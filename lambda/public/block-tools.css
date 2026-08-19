@@ -1,3 +1,5 @@
+.sidebar, .sidebar-scroll { overflow-x: hidden; }
+.sidebar-scroll .nav-item, .sidebar-scroll .note-list-item { min-width: 0; max-width: 100%; }
 .note-editor { width: min(100%, 1176px); }
 .block-card { border-color: var(--line); background: rgba(255,255,255,.72); }
 .block-controls { opacity: 1; transform: none; }
