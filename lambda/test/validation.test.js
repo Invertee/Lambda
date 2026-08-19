@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { validateNote, ValidationError } from '../src/validation.js';
 
-test('normalises tags and block metadata', () => {
+test('normalises tags and legacy heading blocks', () => {
   const note = validateNote({
     title: ' Example ',
     category: ' Work ',
@@ -12,7 +12,9 @@ test('normalises tags and block metadata', () => {
   assert.equal(note.title, 'Example');
   assert.equal(note.category, 'Work');
   assert.deepEqual(note.tags, ['Node', 'sqlite']);
-  assert.equal(note.blocks[0].level, 3);
+  assert.equal(note.blocks[0].type, 'text');
+  assert.equal(note.blocks[0].content, 'Title');
+  assert.equal('level' in note.blocks[0], false);
   assert.ok(note.blocks[0].id);
 });
 
