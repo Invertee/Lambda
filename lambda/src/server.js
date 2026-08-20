@@ -102,8 +102,8 @@ function withBlockTools(contents) {
   const html = contents.toString('utf8');
   if (html.includes('todo-tools.js')) return contents;
   return Buffer.from(html
-    .replace('</head>', '  <link rel="stylesheet" href="block-tools.css?v=1.3.3">\n  <link rel="stylesheet" href="todo-tools.css?v=1.3.3">\n</head>')
-    .replace('</body>', '  <script type="module" src="block-tools.js?v=1.3.3"></script>\n  <script type="module" src="todo-tools.js?v=1.3.3"></script>\n</body>'));
+    .replace('</head>', '  <link rel="stylesheet" href="block-tools.css?v=1.3.4">\n  <link rel="stylesheet" href="todo-tools.css?v=1.3.4">\n</head>')
+    .replace('</body>', '  <script type="module" src="block-tools.js?v=1.3.4"></script>\n  <script type="module" src="todo-tools.js?v=1.3.4"></script>\n</body>'));
 }
 
 function serveFile(response, filename) {
@@ -306,6 +306,18 @@ export function createApp(customConfig = {}) {
       if (blockMatch && ['PATCH', 'PUT'].includes(request.method)) {
         const block = database.updateBlock(validateBlockCode(blockMatch[1]), await readBlockUpdate(request));
         return block ? json(response, 200, block) : json(response, 404, { error: 'Active block not found.' });
+      }
+
+      if (pathname === '/api/todos/count' && request.method === 'GET') {
+        return json(response, 200, { active: todos.countActive() });
+      }
+
+      if (pathname === '/api/todos/order' && request.method === 'PUT') {
+        const body = await readJsonObject(request);
+        if (!Array.isArray(body.ids) || body.ids.some((id) => typeof id !== 'string')) {
+          return json(response, 400, { error: 'ids must be a list of to-do IDs.' });
+        }
+        return json(response, 200, todos.reorderActive(body.ids));
       }
 
       if (pathname === '/api/todos' && request.method === 'GET') {
