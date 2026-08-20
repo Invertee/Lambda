@@ -1,12 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { createMcpHandler, fromJsonSchema, McpServer } from '@modelcontextprotocol/server';
+import { toNodeHandler } from '@modelcontextprotocol/node';
 import { validateBlockCode, validateCategoryName, validateNote, validateTodo } from './validation.js';
 
-export const MCP_PROTOCOL_VERSION = '2026-07-28';
-const LEGACY_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
-const SUPPORTED_PROTOCOL_VERSIONS = [MCP_PROTOCOL_VERSION, ...LEGACY_PROTOCOL_VERSIONS];
-const SERVER_INFO = { name: 'lambda-notes', version: '1.3.2' };
-const SERVER_INFO_META_KEY = 'io.modelcontextprotocol/serverInfo';
-const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion';
+const SERVER_NAME = 'lambda-notes';
+const SERVER_VERSION = '1.3.3';
 
 const blockSchema = {
   type: 'object',
@@ -18,6 +16,7 @@ const blockSchema = {
     language: { type: 'string', description: 'Language identifier for a code block.' },
   },
   required: ['type', 'content'],
+  additionalProperties: false,
 };
 
 const noteFields = {
@@ -141,7 +140,7 @@ export const MCP_TOOLS = [
   {
     name: 'list_notes',
     title: 'List and search notes',
-    description: 'List notes ordered by most recently updated, optionally filtering by full-text query, category, tag, or block code.',
+    description: 'List active notes ordered by most recently updated, optionally filtering by query, category, tag, or block code.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -181,7 +180,7 @@ export const MCP_TOOLS = [
   {
     name: 'update_block',
     title: 'Update a block by code',
-    description: 'Replace the content of an active text, code, or CSV block using its five-character code. Set type to csv when supplying CSV table data.',
+    description: 'Replace the content of an active text, code, or CSV block using its five-character code.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -310,14 +309,13 @@ function updateNote(database, args) {
   if (!current || current.deletedAt) throw new Error('Active note not found.');
   const has = (key) => Object.hasOwn(args, key);
   const usesContent = has('content') || has('content_type') || has('language');
-  const updated = validateNote({
+  return database.updateNote(current.id, validateNote({
     title: has('title') ? args.title : current.title,
     category: has('category') ? args.category : current.category,
     tags: has('tags') ? args.tags : current.tags,
     blocks: has('blocks') ? args.blocks : (usesContent ? blocksFromArguments(args) : current.blocks),
     versionToken: randomUUID(),
-  });
-  return database.updateNote(current.id, updated);
+  }));
 }
 
 function listNotes(database, args) {
@@ -331,14 +329,8 @@ function requireResult(value, message) {
   return value;
 }
 
-function requireTodos(todos) {
-  if (!todos) throw new Error('To-do storage is unavailable.');
-  return todos;
-}
-
 function mergeTodo(todos, args) {
-  const store = requireTodos(todos);
-  const current = requireResult(store.getTodo(String(args.id || '')), 'To-do not found.');
+  const current = requireResult(todos.getTodo(String(args.id || '')), 'To-do not found.');
   const has = (key) => Object.hasOwn(args, key);
   return validateTodo({
     title: has('title') ? args.title : current.title,
@@ -348,162 +340,116 @@ function mergeTodo(todos, args) {
   });
 }
 
-const toolHandlers = {
-  list_todos: (database, args, todos) => requireTodos(todos).listTodos({
-    includeCompleted: Boolean(args.include_completed),
-    completedOnly: Boolean(args.completed_only),
-    search: args.query || '',
-  }),
-  get_todo: (database, args, todos) => requireResult(requireTodos(todos).getTodo(String(args.id || '')), 'To-do not found.'),
-  create_todo: (database, args, todos) => requireTodos(todos).createTodo(validateTodo({
-    title: args.title,
-    dueDate: args.due_date,
-    subtasks: args.subtasks || [],
-    completed: Boolean(args.completed),
-  })),
-  update_todo: (database, args, todos) => requireResult(
-    requireTodos(todos).updateTodo(String(args.id || ''), mergeTodo(todos, args)),
-    'To-do not found.',
-  ),
-  complete_todo: (database, args, todos) => {
-    const store = requireTodos(todos);
-    const current = requireResult(store.getTodo(String(args.id || '')), 'To-do not found.');
-    return store.updateTodo(current.id, validateTodo({
-      title: current.title,
-      dueDate: current.dueDate,
-      subtasks: current.subtasks,
-      completed: args.completed === undefined ? true : Boolean(args.completed),
-    }));
-  },
-  delete_todo: (database, args, todos) => ({
-    deleted: requireResult(requireTodos(todos).deleteTodo(String(args.id || '')), 'To-do not found.'),
-    id: String(args.id || ''),
-  }),
-  clear_completed_todos: (database, args, todos) => ({ deleted: requireTodos(todos).clearCompleted() }),
-  list_notes: (database, args) => listNotes(database, args),
-  get_note: (database, args) => requireResult(database.getNote(String(args.id || '')), 'Note not found.'),
-  get_block: (database, args) => requireResult(database.getBlock(validateBlockCode(args.code)), 'Active block not found.'),
-  update_block: (database, args) => requireResult(database.updateBlock(validateBlockCode(args.code), {
-    content: args.content,
-    ...(args.type !== undefined ? { type: args.type } : {}),
-    ...(args.language !== undefined ? { language: args.language } : {}),
-  }), 'Active block not found.'),
-  create_note: createNote,
-  update_note: updateNote,
-  delete_note: (database, args) => ({ deleted: requireResult(database.softDelete(String(args.id || '')), 'Active note not found.'), id: args.id }),
-  restore_note: (database, args) => {
-    requireResult(database.restoreNote(String(args.id || '')), 'Deleted note not found.');
-    return database.getNote(String(args.id));
-  },
-  list_categories: (database) => database.listCategories(),
-  create_category: (database, args) => database.createCategory(validateCategoryName(args.name)),
-  rename_category: (database, args) => requireResult(
-    database.renameCategory(Number(args.id), validateCategoryName(args.name)),
-    'Category not found.',
-  ),
-  delete_category: (database, args) => ({
-    deleted: requireResult(database.deleteCategory(Number(args.id)), 'Category not found.'),
-    id: Number(args.id),
-  }),
-};
-
-function isModernMessage(message) {
-  if (message.method === 'server/discover') return true;
-  const meta = message.params?._meta;
-  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return false;
-  return meta[PROTOCOL_VERSION_META_KEY] === MCP_PROTOCOL_VERSION;
-}
-
-function withModernMeta(value, modern) {
-  if (!modern || !value || typeof value !== 'object' || Array.isArray(value)) return value;
+function toolHandlers(database, todos) {
   return {
-    resultType: value.resultType || 'complete',
-    ...value,
-    _meta: {
-      ...(value._meta || {}),
-      [SERVER_INFO_META_KEY]: SERVER_INFO,
+    list_todos: (args) => todos.listTodos({
+      includeCompleted: Boolean(args.include_completed),
+      completedOnly: Boolean(args.completed_only),
+      search: args.query || '',
+    }),
+    get_todo: (args) => requireResult(todos.getTodo(String(args.id || '')), 'To-do not found.'),
+    create_todo: (args) => todos.createTodo(validateTodo({
+      title: args.title,
+      dueDate: args.due_date,
+      subtasks: args.subtasks || [],
+      completed: Boolean(args.completed),
+    })),
+    update_todo: (args) => requireResult(todos.updateTodo(String(args.id || ''), mergeTodo(todos, args)), 'To-do not found.'),
+    complete_todo: (args) => {
+      const current = requireResult(todos.getTodo(String(args.id || '')), 'To-do not found.');
+      return todos.updateTodo(current.id, validateTodo({
+        title: current.title,
+        dueDate: current.dueDate,
+        subtasks: current.subtasks,
+        completed: args.completed === undefined ? true : Boolean(args.completed),
+      }));
     },
+    delete_todo: (args) => ({
+      deleted: requireResult(todos.deleteTodo(String(args.id || '')), 'To-do not found.'),
+      id: String(args.id || ''),
+    }),
+    clear_completed_todos: () => ({ deleted: todos.clearCompleted() }),
+    list_notes: (args) => listNotes(database, args),
+    get_note: (args) => requireResult(database.getNote(String(args.id || '')), 'Note not found.'),
+    get_block: (args) => requireResult(database.getBlock(validateBlockCode(args.code)), 'Active block not found.'),
+    update_block: (args) => requireResult(database.updateBlock(validateBlockCode(args.code), {
+      content: args.content,
+      ...(args.type !== undefined ? { type: args.type } : {}),
+      ...(args.language !== undefined ? { language: args.language } : {}),
+    }), 'Active block not found.'),
+    create_note: (args) => createNote(database, args),
+    update_note: (args) => updateNote(database, args),
+    delete_note: (args) => ({
+      deleted: requireResult(database.softDelete(String(args.id || '')), 'Active note not found.'),
+      id: String(args.id || ''),
+    }),
+    restore_note: (args) => {
+      const id = String(args.id || '');
+      requireResult(database.restoreNote(id), 'Deleted note not found.');
+      return database.getNote(id);
+    },
+    list_categories: () => database.listCategories(),
+    create_category: (args) => database.createCategory(validateCategoryName(args.name)),
+    rename_category: (args) => requireResult(
+      database.renameCategory(Number(args.id), validateCategoryName(args.name)),
+      'Category not found.',
+    ),
+    delete_category: (args) => ({
+      deleted: requireResult(database.deleteCategory(Number(args.id)), 'Category not found.'),
+      id: Number(args.id),
+    }),
   };
 }
 
-function result(id, value, modern = false) {
-  return { jsonrpc: '2.0', id, result: withModernMeta(value, modern) };
-}
-
-function protocolError(id, code, message) {
-  return { jsonrpc: '2.0', id: id ?? null, error: { code, message } };
-}
-
-function toolResult(value, isError = false, modern = false) {
-  const structuredContent = isError ? { error: String(value) } : { result: value };
-  const payload = {
-    content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
-    structuredContent,
-    isError,
+function asToolResult(value) {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(value) }],
+    structuredContent: { result: value },
   };
-  return modern ? { resultType: 'complete', ...payload } : payload;
 }
 
-export function processMcpMessage(database, message, todos = null, protocolVersion = '') {
-  if (!message || typeof message !== 'object' || Array.isArray(message) || message.jsonrpc !== '2.0' || typeof message.method !== 'string') {
-    return { status: 400, body: protocolError(message?.id, -32600, 'Invalid Request') };
+function asToolError(error) {
+  const message = error?.message || 'Tool call failed.';
+  return {
+    content: [{ type: 'text', text: message }],
+    structuredContent: { error: message },
+    isError: true,
+  };
+}
+
+export function createLambdaMcpServer(database, todos) {
+  const server = new McpServer({
+    name: SERVER_NAME,
+    version: SERVER_VERSION,
+  });
+  const handlers = toolHandlers(database, todos);
+
+  for (const tool of MCP_TOOLS) {
+    server.registerTool(
+      tool.name,
+      {
+        title: tool.title,
+        description: tool.description,
+        inputSchema: fromJsonSchema(tool.inputSchema),
+        annotations: tool.annotations,
+      },
+      async (args) => {
+        try {
+          return asToolResult(await handlers[tool.name](args || {}));
+        } catch (error) {
+          return asToolError(error);
+        }
+      },
+    );
   }
 
-  const modern = protocolVersion === MCP_PROTOCOL_VERSION || isModernMessage(message);
+  return server;
+}
 
-  if (message.method === 'notifications/initialized') return { status: 202, body: null };
-
-  if (message.method === 'server/discover') {
-    return {
-      status: 200,
-      body: result(message.id, {
-        resultType: 'complete',
-        supportedVersions: SUPPORTED_PROTOCOL_VERSIONS,
-        capabilities: { tools: {} },
-        instructions: 'Use Lambda tools to manage notes, directly address note blocks, and track active or completed to-dos with due dates and subtasks.',
-        ttlMs: 300_000,
-        cacheScope: 'private',
-      }, true),
-    };
-  }
-
-  if (message.method === 'initialize') {
-    const requested = message.params?.protocolVersion;
-    const selectedProtocol = LEGACY_PROTOCOL_VERSIONS.includes(requested) ? requested : '2025-11-25';
-    return {
-      status: 200,
-      body: result(message.id, {
-        protocolVersion: selectedProtocol,
-        capabilities: { tools: { listChanged: false } },
-        serverInfo: SERVER_INFO,
-        instructions: 'Use Lambda tools to manage notes, directly address note blocks, and track active or completed to-dos with due dates and subtasks.',
-      }),
-    };
-  }
-
-  if (message.method === 'ping') return { status: 200, body: result(message.id, {}, modern) };
-
-  if (message.method === 'tools/list') {
-    const payload = modern
-      ? { resultType: 'complete', tools: MCP_TOOLS, ttlMs: 300_000, cacheScope: 'private' }
-      : { tools: MCP_TOOLS };
-    return { status: 200, body: result(message.id, payload, modern) };
-  }
-
-  if (message.method === 'tools/call') {
-    const name = message.params?.name;
-    const handler = toolHandlers[name];
-    if (!handler) return { status: 400, body: protocolError(message.id, -32602, `Unknown tool: ${String(name || '')}`) };
-    const args = message.params?.arguments;
-    if (args !== undefined && (!args || typeof args !== 'object' || Array.isArray(args))) {
-      return { status: 400, body: protocolError(message.id, -32602, 'Tool arguments must be an object.') };
-    }
-    try {
-      return { status: 200, body: result(message.id, toolResult(handler(database, args || {}, todos), false, modern), modern) };
-    } catch (error) {
-      return { status: 200, body: result(message.id, toolResult(error.message || 'Tool call failed.', true, modern), modern) };
-    }
-  }
-
-  return { status: 404, body: protocolError(message.id, -32601, 'Method not found') };
+export function createLambdaMcpNodeHandler(database, todos) {
+  const handler = createMcpHandler(
+    () => createLambdaMcpServer(database, todos),
+    { legacy: 'stateless' },
+  );
+  return toNodeHandler(handler);
 }
