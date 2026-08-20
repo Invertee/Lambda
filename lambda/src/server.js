@@ -185,7 +185,7 @@ export function createApp(customConfig = {}) {
             return json(response, 400, { error: 'The Mcp-Name header must match the requested tool.' });
           }
         }
-        const processed = processMcpMessage(database, message, todos);
+        const processed = processMcpMessage(database, message, todos, protocolVersion);
         return processed.body === null
           ? empty(response, processed.status)
           : json(response, processed.status, processed.body);
