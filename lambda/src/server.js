@@ -7,7 +7,7 @@ import { apiKeyMatches, AuthManager } from './auth.js';
 import { loadConfig } from './config.js';
 import { SnippetDatabase } from './database.js';
 import { EncryptionVault } from './encryption.js';
-import { MCP_PROTOCOL_VERSION, processMcpMessage } from './mcp.js';
+import { createLambdaMcpNodeHandler } from './mcp.js';
 import { TodoStore } from './todo-store.js';
 import { ValidationError, validateBackup, validateBlockCode, validateCategoryName, validateNote, validateTodo } from './validation.js';
 
@@ -102,8 +102,8 @@ function withBlockTools(contents) {
   const html = contents.toString('utf8');
   if (html.includes('todo-tools.js')) return contents;
   return Buffer.from(html
-    .replace('</head>', '  <link rel="stylesheet" href="block-tools.css?v=1.3.0">\n  <link rel="stylesheet" href="todo-tools.css?v=1.3.0">\n</head>')
-    .replace('</body>', '  <script type="module" src="block-tools.js?v=1.3.0"></script>\n  <script type="module" src="todo-tools.js?v=1.3.0"></script>\n</body>'));
+    .replace('</head>', '  <link rel="stylesheet" href="block-tools.css?v=1.3.3">\n  <link rel="stylesheet" href="todo-tools.css?v=1.3.3">\n</head>')
+    .replace('</body>', '  <script type="module" src="block-tools.js?v=1.3.3"></script>\n  <script type="module" src="todo-tools.js?v=1.3.3"></script>\n</body>'));
 }
 
 function serveFile(response, filename) {
@@ -142,6 +142,16 @@ function normalizedTodoInput(body, current = null) {
   });
 }
 
+function logMcpRequest(request, response) {
+  const protocol = String(request.headers['mcp-protocol-version'] || 'legacy/negotiating');
+  const method = String(request.headers['mcp-method'] || request.method || 'unknown');
+  const tool = String(request.headers['mcp-name'] || '');
+  response.once('finish', () => {
+    const toolPart = tool ? ` tool=${tool}` : '';
+    console.log(`[Lambda MCP] ${method} protocol=${protocol}${toolPart} status=${response.statusCode}`);
+  });
+}
+
 export function createApp(customConfig = {}) {
   const config = { ...loadConfig(), ...customConfig };
   const encryptionKeyPath = customConfig.encryptionKeyPath
@@ -150,6 +160,7 @@ export function createApp(customConfig = {}) {
   const database = customConfig.database || new SnippetDatabase(config.dbPath, encryption);
   const todos = customConfig.todos || new TodoStore(database.db, encryption);
   const auth = new AuthManager(config.password, config.sessionDays, database.sessions);
+  const mcpHandler = createLambdaMcpNodeHandler(database, todos);
 
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
@@ -169,26 +180,9 @@ export function createApp(customConfig = {}) {
             'WWW-Authenticate': 'Bearer realm="Lambda MCP"',
           });
         }
-        if (request.method !== 'POST') {
-          return json(response, 405, { error: 'Use POST for this stateless MCP endpoint.' }, { Allow: 'POST' });
-        }
-        const message = await readJson(request);
-        const protocolVersion = String(request.headers['mcp-protocol-version'] || '');
-        if (protocolVersion && ![MCP_PROTOCOL_VERSION, '2025-11-25', '2025-06-18', '2025-03-26'].includes(protocolVersion)) {
-          return json(response, 400, { error: `Unsupported MCP protocol version: ${protocolVersion}` });
-        }
-        if (protocolVersion === MCP_PROTOCOL_VERSION) {
-          if (request.headers['mcp-method'] !== message.method) {
-            return json(response, 400, { error: 'The Mcp-Method header must match the JSON-RPC method.' });
-          }
-          if (message.method === 'tools/call' && request.headers['mcp-name'] !== message.params?.name) {
-            return json(response, 400, { error: 'The Mcp-Name header must match the requested tool.' });
-          }
-        }
-        const processed = processMcpMessage(database, message, todos, protocolVersion);
-        return processed.body === null
-          ? empty(response, processed.status)
-          : json(response, processed.status, processed.body);
+        logMcpRequest(request, response);
+        await mcpHandler(request, response);
+        return;
       }
 
       if (pathname === '/api/auth/status' && request.method === 'GET') {
