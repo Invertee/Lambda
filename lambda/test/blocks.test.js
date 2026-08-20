@@ -64,6 +64,47 @@ test('MCP gets and updates blocks by code including CSV content', () => {
   database.close();
 });
 
+test('modern MCP discovery and tool listing use the final 2026 response envelope', () => {
+  const database = new SnippetDatabase(':memory:');
+  const meta = {
+    'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+    'io.modelcontextprotocol/clientInfo': { name: 'test-client', version: '1.0.0' },
+    'io.modelcontextprotocol/clientCapabilities': {},
+  };
+
+  const discovered = processMcpMessage(database, {
+    jsonrpc: '2.0',
+    id: 'discover-1',
+    method: 'server/discover',
+    params: { _meta: meta },
+  });
+  assert.equal(discovered.status, 200);
+  assert.equal(discovered.body.result.supportedVersions[0], '2026-07-28');
+  assert.equal(discovered.body.result.serverInfo, undefined);
+  assert.equal(discovered.body.result._meta['io.modelcontextprotocol/serverInfo'].name, 'lambda-notes');
+
+  const listed = processMcpMessage(database, {
+    jsonrpc: '2.0',
+    id: 'tools-1',
+    method: 'tools/list',
+    params: { _meta: meta },
+  });
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.result.resultType, 'complete');
+  assert.ok(listed.body.result.tools.some((tool) => tool.name === 'create_note'));
+  assert.equal(listed.body.result._meta['io.modelcontextprotocol/serverInfo'].version, '1.2.8');
+
+  const legacy = processMcpMessage(database, {
+    jsonrpc: '2.0',
+    id: 'legacy-tools',
+    method: 'tools/list',
+    params: {},
+  });
+  assert.equal(legacy.body.result.resultType, undefined);
+  assert.equal(legacy.body.result._meta, undefined);
+  database.close();
+});
+
 test('REST block API accepts JSON and raw CSV and serves the enhanced web shell', async (context) => {
   const database = new SnippetDatabase(':memory:');
   const app = createApp({
