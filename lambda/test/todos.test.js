@@ -19,6 +19,12 @@ test('todo storage lists active items by priority and keeps completed items sepa
   assert.equal(first.priority, 1);
   assert.equal(second.priority, 2);
   assert.equal(todos.countActive(), 2);
+  assert.deepEqual(todos.summaryForDate('2026-08-20'), {
+    active: 2,
+    dueToday: 0,
+    overdue: 0,
+    dueTomorrow: 1,
+  });
 
   const reordered = todos.reorderActive([second.id, first.id]);
   assert.deepEqual(reordered.map((todo) => todo.id), [second.id, first.id]);
@@ -48,7 +54,7 @@ test('todo storage lists active items by priority and keeps completed items sepa
   database.close();
 });
 
-test('todo REST API defaults to active items, exposes count, reorders priority, and clears completed history', async (context) => {
+test('todo REST API defaults to active items, exposes summaries, reorders priority, and clears completed history', async (context) => {
   const database = new SnippetDatabase(':memory:');
   const todos = new TodoStore(database.db);
   const app = createApp({
@@ -90,6 +96,18 @@ test('todo REST API defaults to active items, exposes count, reorders priority, 
 
   const count = await fetch(`${base}/api/todos/count`, { headers }).then((response) => response.json());
   assert.equal(count.active, 2);
+
+  const summary = await fetch(`${base}/api/todos/summary?date=2026-08-22`, { headers }).then((response) => response.json());
+  assert.deepEqual(summary, {
+    date: '2026-08-22',
+    active: 2,
+    dueToday: 1,
+    overdue: 0,
+    dueTomorrow: 0,
+  });
+
+  const badSummary = await fetch(`${base}/api/todos/summary?date=22-08-2026`, { headers });
+  assert.equal(badSummary.status, 400);
 
   const reorderedResponse = await fetch(`${base}/api/todos/order`, {
     method: 'PUT',
