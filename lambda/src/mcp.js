@@ -173,7 +173,7 @@ export const MCP_TOOLS = [
     description: 'Delete a category only when no active or deleted notes use it.',
     inputSchema: {
       type: 'object',
-      properties: { id: { type: 'integer' }, name: { type: 'string', maxLength: 80 } },
+      properties: { id: { type: 'integer' } },
       required: ['id'],
       additionalProperties: false,
     },
