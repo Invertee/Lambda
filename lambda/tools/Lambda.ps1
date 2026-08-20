@@ -1,14 +1,14 @@
-$script:LambdaHelperVersion = '1.3.5'
+$script:LambdaHelperVersion = '1.3.6'
 $script:LambdaHelperPath = $PSCommandPath
 $script:LambdaTodoCache = @()
 $script:LambdaTodoCacheLoaded = $false
-$script:LambdaTodoCountCacheRoot = if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+$script:LambdaTodoSummaryCacheRoot = if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
     Join-Path $env:LOCALAPPDATA 'Lambda'
 }
 else {
     Join-Path $HOME '.lambda'
 }
-$script:LambdaTodoCountCachePath = Join-Path $script:LambdaTodoCountCacheRoot 'todo-count.json'
+$script:LambdaTodoSummaryCachePath = Join-Path $script:LambdaTodoSummaryCacheRoot 'todo-summary.json'
 
 Update-TypeData -TypeName 'Lambda.TodoView' -DefaultDisplayPropertySet 'No','Due','Task','Steps' -Force
 
@@ -143,40 +143,47 @@ function Resolve-LambdaConnection {
     }
 }
 
-function Set-LambdaTodoCountCache {
+function Set-LambdaTodoSummaryCache {
     param(
         [Parameter(Mandatory)]
-        [ValidateRange(0, 1000000)]
-        [int] $Count
+        [object] $Summary
     )
 
     try {
-        if (-not (Test-Path -LiteralPath $script:LambdaTodoCountCacheRoot)) {
-            New-Item -ItemType Directory -Path $script:LambdaTodoCountCacheRoot -Force | Out-Null
+        if (-not (Test-Path -LiteralPath $script:LambdaTodoSummaryCacheRoot)) {
+            New-Item -ItemType Directory -Path $script:LambdaTodoSummaryCacheRoot -Force | Out-Null
         }
         [pscustomobject]@{
-            active    = $Count
-            updatedAt = (Get-Date).ToString('o')
+            date        = if ($Summary.date) { [string] $Summary.date } else { (Get-Date).ToString('yyyy-MM-dd') }
+            active      = [int] $Summary.active
+            dueToday    = [int] $Summary.dueToday
+            overdue     = [int] $Summary.overdue
+            dueTomorrow = [int] $Summary.dueTomorrow
+            updatedAt   = (Get-Date).ToString('o')
         } |
             ConvertTo-Json -Compress |
-            Set-Content -LiteralPath $script:LambdaTodoCountCachePath -Encoding utf8
+            Set-Content -LiteralPath $script:LambdaTodoSummaryCachePath -Encoding utf8
     }
     catch {
     }
 }
 
-function Get-LambdaTodoCountCache {
+function Get-LambdaTodoSummaryCache {
     try {
-        if (-not (Test-Path -LiteralPath $script:LambdaTodoCountCachePath)) {
+        if (-not (Test-Path -LiteralPath $script:LambdaTodoSummaryCachePath)) {
             return $null
         }
-        $payload = Get-Content -LiteralPath $script:LambdaTodoCountCachePath -Raw | ConvertFrom-Json
+        $payload = Get-Content -LiteralPath $script:LambdaTodoSummaryCachePath -Raw | ConvertFrom-Json
         if ($null -eq $payload -or $null -eq $payload.active) {
             return $null
         }
         return [pscustomobject]@{
-            active    = [int] $payload.active
-            updatedAt = $payload.updatedAt
+            date        = [string] $payload.date
+            active      = [int] $payload.active
+            dueToday    = [int] $payload.dueToday
+            overdue     = [int] $payload.overdue
+            dueTomorrow = [int] $payload.dueTomorrow
+            updatedAt   = $payload.updatedAt
         }
     }
     catch {
@@ -184,10 +191,68 @@ function Get-LambdaTodoCountCache {
     }
 }
 
+function Get-LambdaTodoSummaryFromItems {
+    param(
+        [object[]] $Todos
+    )
+
+    $today = (Get-Date).Date
+    $todayKey = $today.ToString('yyyy-MM-dd')
+    $tomorrowKey = $today.AddDays(1).ToString('yyyy-MM-dd')
+    $active = @($Todos | Where-Object { -not $_.completed })
+    return [pscustomobject]@{
+        date        = $todayKey
+        active      = $active.Count
+        dueToday    = @($active | Where-Object { $_.dueDate -eq $todayKey }).Count
+        overdue     = @($active | Where-Object { $_.dueDate -and $_.dueDate -lt $todayKey }).Count
+        dueTomorrow = @($active | Where-Object { $_.dueDate -eq $tomorrowKey }).Count
+    }
+}
+
+function Update-LambdaTodoSummaryCacheFromItems {
+    param(
+        [object[]] $Todos
+    )
+
+    Set-LambdaTodoSummaryCache -Summary (Get-LambdaTodoSummaryFromItems -Todos $Todos)
+}
+
+function Format-LambdaTodoSummary {
+    param(
+        [Parameter(Mandatory)]
+        [object] $Summary
+    )
+
+    $active = [int] $Summary.active
+    $dueToday = [int] $Summary.dueToday
+    $overdue = [int] $Summary.overdue
+    $dueTomorrow = [int] $Summary.dueTomorrow
+
+    if ($active -eq 0) {
+        return 'Lambda To-Dos none outstanding'
+    }
+
+    $parts = [System.Collections.Generic.List[string]]::new()
+    if ($overdue -gt 0) {
+        $parts.Add(('{0} overdue' -f $overdue))
+    }
+    if ($dueToday -gt 0) {
+        $parts.Add(('{0} due today' -f $dueToday))
+    }
+    elseif ($overdue -eq 0 -and $dueTomorrow -gt 0) {
+        $parts.Add(('{0} due tomorrow' -f $dueTomorrow))
+    }
+    if ($parts.Count -eq 0) {
+        $parts.Add('nothing due today')
+    }
+    $parts.Add(('{0} active' -f $active))
+    return 'Lambda To-Dos ' + ($parts -join ', ')
+}
+
 function Show-LambdaTodoSummary {
     <#
     .SYNOPSIS
-    Shows the active Lambda to-do count with a hard startup wait and a local cached fallback.
+    Shows a short due-date summary at profile startup with a hard sub-250ms network wait.
     #>
     [CmdletBinding()]
     param(
@@ -204,7 +269,8 @@ function Show-LambdaTodoSummary {
     $client = $null
     $request = $null
     $response = $null
-    $freshCount = $null
+    $freshSummary = $null
+    $todayKey = (Get-Date).ToString('yyyy-MM-dd')
 
     try {
         $connection = Resolve-LambdaConnection -Uri $Uri -ApiKey $ApiKey
@@ -212,7 +278,7 @@ function Show-LambdaTodoSummary {
         $client.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan
         $request = [System.Net.Http.HttpRequestMessage]::new(
             [System.Net.Http.HttpMethod]::Get,
-            ('{0}/api/todos/count' -f $connection.Uri)
+            ('{0}/api/todos/summary?date={1}' -f $connection.Uri, $todayKey)
         )
         $request.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $connection.ApiKey)
 
@@ -220,9 +286,8 @@ function Show-LambdaTodoSummary {
         if ($task.Wait($TimeoutMs)) {
             $response = $task.GetAwaiter().GetResult()
             if ($response.IsSuccessStatusCode) {
-                $payload = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json
-                $freshCount = [int] $payload.active
-                Set-LambdaTodoCountCache -Count $freshCount
+                $freshSummary = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json
+                Set-LambdaTodoSummaryCache -Summary $freshSummary
             }
         }
     }
@@ -240,24 +305,22 @@ function Show-LambdaTodoSummary {
         }
     }
 
-    $cached = $null
-    $label = ''
-    if ($null -ne $freshCount) {
-        $count = $freshCount
-    }
-    else {
-        $cached = Get-LambdaTodoCountCache
-        if ($null -eq $cached) {
-            return
+    $summary = $freshSummary
+    if ($null -eq $summary) {
+        $cached = Get-LambdaTodoSummaryCache
+        if ($null -ne $cached -and $cached.date -eq $todayKey) {
+            $summary = $cached
         }
-        $count = [int] $cached.active
-        $label = ' cached'
     }
 
-    $suffix = if ($count -eq 1) { '' } else { 's' }
-    Write-Host ('Lambda {0} active to-do{1}{2}' -f $count, $suffix, $label)
+    if ($null -eq $summary) {
+        Write-Host 'Lambda To-Dos ready'
+        return
+    }
+
+    Write-Host (Format-LambdaTodoSummary -Summary $summary)
     if ($PassThru) {
-        return $count
+        return $summary
     }
 }
 
@@ -304,10 +367,25 @@ function ConvertTo-LambdaDueDate {
     if ($text -ieq 'tomorrow') {
         return (Get-Date).Date.AddDays(1).ToString('yyyy-MM-dd')
     }
+    if ($text -ieq 'end of week' -or $text -ieq 'endofweek') {
+        $date = (Get-Date).Date
+        $day = [int] $date.DayOfWeek
+        $offset = if ($day -eq 6) { 6 } else { (5 - $day + 7) % 7 }
+        return $date.AddDays($offset).ToString('yyyy-MM-dd')
+    }
+    if ($text -ieq 'next week' -or $text -ieq 'nextweek') {
+        $date = (Get-Date).Date
+        $day = [int] $date.DayOfWeek
+        $offset = (8 - $day) % 7
+        if ($offset -eq 0) {
+            $offset = 7
+        }
+        return $date.AddDays($offset).ToString('yyyy-MM-dd')
+    }
 
     $parsed = [datetime]::MinValue
     if (-not [datetime]::TryParse($text, [ref] $parsed)) {
-        throw 'DueDate must be a valid date, today, or tomorrow.'
+        throw 'DueDate must be a valid date, today, tomorrow, end of week, or next week.'
     }
     return $parsed.ToString('yyyy-MM-dd')
 }
@@ -671,30 +749,89 @@ function ConvertTo-LambdaTodoView {
             $number++
             $todoNumber = $number
         }
+        $subtasks = @(Expand-LambdaRestCollection -Value $todo.subtasks)
         $steps = ''
-        $subtasks = @($todo.subtasks)
         if ($subtasks.Count) {
             $done = @($subtasks | Where-Object { $_.completed }).Count
             $steps = '{0}/{1}' -f $done, $subtasks.Count
         }
 
         [pscustomobject]@{
-            PSTypeName  = 'Lambda.TodoView'
-            No          = $todoNumber
-            Due         = ConvertTo-LambdaTodoDueLabel -DueDate $todo.dueDate -Completed ([bool] $todo.completed)
-            Task        = $todo.title
-            Steps       = $steps
-            Id          = $todo.id
-            Priority    = $todo.priority
-            Title       = $todo.title
-            DueDate     = $todo.dueDate
-            Subtasks    = $todo.subtasks
-            Completed   = $todo.completed
-            CompletedAt = $todo.completedAt
-            CreatedAt   = $todo.createdAt
-            UpdatedAt   = $todo.updatedAt
+            PSTypeName   = 'Lambda.TodoView'
+            No           = $todoNumber
+            Due          = ConvertTo-LambdaTodoDueLabel -DueDate $todo.dueDate -Completed ([bool] $todo.completed)
+            Task         = $todo.title
+            Steps        = $steps
+            Id           = $todo.id
+            Priority     = $todo.priority
+            Title        = $todo.title
+            DueDate      = $todo.dueDate
+            Subtasks     = $todo.subtasks
+            Completed    = $todo.completed
+            CompletedAt  = $todo.completedAt
+            CreatedAt    = $todo.createdAt
+            UpdatedAt    = $todo.updatedAt
+            IsSubtask    = $false
+            SubtaskIndex = $null
+            SubtaskId    = $null
+        }
+
+        if (-not $todo.completed) {
+            for ($subtaskIndex = 0; $subtaskIndex -lt $subtasks.Count; $subtaskIndex++) {
+                $subtask = $subtasks[$subtaskIndex]
+                $mark = if ($subtask.completed) { '[x]' } else { '[ ]' }
+                [pscustomobject]@{
+                    PSTypeName   = 'Lambda.TodoView'
+                    No           = '{0}.{1}' -f $todoNumber, ($subtaskIndex + 1)
+                    Due          = ''
+                    Task         = '  {0} {1}' -f $mark, $subtask.title
+                    Steps        = ''
+                    Id           = $todo.id
+                    Priority     = $todo.priority
+                    Title        = $subtask.title
+                    DueDate      = $todo.dueDate
+                    Subtasks     = $todo.subtasks
+                    Completed    = $subtask.completed
+                    CompletedAt  = $null
+                    CreatedAt    = $todo.createdAt
+                    UpdatedAt    = $todo.updatedAt
+                    IsSubtask    = $true
+                    SubtaskIndex = $subtaskIndex
+                    SubtaskId    = $subtask.id
+                }
+            }
         }
     }
+}
+
+function Update-LambdaTodoCacheItem {
+    param(
+        [Parameter(Mandatory)]
+        [object] $Updated
+    )
+
+    if (-not $script:LambdaTodoCacheLoaded) {
+        return
+    }
+
+    $next = [System.Collections.Generic.List[object]]::new()
+    $matched = $false
+    foreach ($todoItem in $script:LambdaTodoCache) {
+        if ($todoItem.id -eq $Updated.id) {
+            $matched = $true
+            if (-not $Updated.completed) {
+                $next.Add($Updated)
+            }
+        }
+        else {
+            $next.Add($todoItem)
+        }
+    }
+    if (-not $matched -and -not $Updated.completed) {
+        $next.Add($Updated)
+    }
+    $script:LambdaTodoCache = $next.ToArray()
+    Update-LambdaTodoSummaryCacheFromItems -Todos $script:LambdaTodoCache
 }
 
 function New-LambdaTodo {
@@ -737,7 +874,7 @@ function New-LambdaTodo {
 
     if ($script:LambdaTodoCacheLoaded) {
         $script:LambdaTodoCache = @($script:LambdaTodoCache) + @($created)
-        Set-LambdaTodoCountCache -Count $script:LambdaTodoCache.Count
+        Update-LambdaTodoSummaryCacheFromItems -Todos $script:LambdaTodoCache
     }
     return $created
 }
@@ -745,7 +882,7 @@ function New-LambdaTodo {
 function Get-LambdaTodo {
     <#
     .SYNOPSIS
-    Gets active Lambda to-dos in a compact numbered view by default.
+    Gets active Lambda to-dos and their subtasks in a compact numbered view by default.
 
     .EXAMPLE
     todo
@@ -801,7 +938,7 @@ function Get-LambdaTodo {
         $script:LambdaTodoCache = @($result | Where-Object { -not $_.completed })
         $script:LambdaTodoCacheLoaded = $true
         if ([string]::IsNullOrWhiteSpace($Query)) {
-            Set-LambdaTodoCountCache -Count $script:LambdaTodoCache.Count
+            Update-LambdaTodoSummaryCacheFromItems -Todos $script:LambdaTodoCache
         }
     }
 
@@ -809,6 +946,65 @@ function Get-LambdaTodo {
         return $result
     }
     return ConvertTo-LambdaTodoView -Todos $result
+}
+
+function Resolve-LambdaTodoReference {
+    param(
+        [Parameter(Mandatory)]
+        [object] $Value,
+
+        [string] $Uri,
+
+        [string] $ApiKey
+    )
+
+    if ($null -ne $Value.PSObject.Properties['IsSubtask'] -and $Value.IsSubtask) {
+        return [pscustomobject]@{
+            TodoId       = [string] $Value.Id
+            SubtaskIndex = [int] $Value.SubtaskIndex
+            Display      = [string] $Value.No
+        }
+    }
+
+    if ($null -ne $Value.PSObject.Properties['Id'] -and -not [string]::IsNullOrWhiteSpace([string] $Value.Id)) {
+        return [pscustomobject]@{
+            TodoId       = [string] $Value.Id
+            SubtaskIndex = $null
+            Display      = [string] $Value.Id
+        }
+    }
+
+    $text = ([string] $Value).Trim()
+    if ($text -match '^(\d+)(?:\.(\d+))?$') {
+        if (-not $script:LambdaTodoCacheLoaded) {
+            $null = @(Get-LambdaTodo -Raw -Uri $Uri -ApiKey $ApiKey)
+        }
+        $todoNumber = [int] $Matches[1]
+        if ($todoNumber -lt 1 -or $todoNumber -gt $script:LambdaTodoCache.Count) {
+            throw ('To-do number {0} is not in the current active list. Run todo to refresh the numbering.' -f $todoNumber)
+        }
+        $todo = $script:LambdaTodoCache[$todoNumber - 1]
+        $subtaskIndex = $null
+        if ($Matches[2]) {
+            $subtaskNumber = [int] $Matches[2]
+            $subtasks = @(Expand-LambdaRestCollection -Value $todo.subtasks)
+            if ($subtaskNumber -lt 1 -or $subtaskNumber -gt $subtasks.Count) {
+                throw ('Subtask {0} does not exist. Run todo to refresh the numbering.' -f $text)
+            }
+            $subtaskIndex = $subtaskNumber - 1
+        }
+        return [pscustomobject]@{
+            TodoId       = [string] $todo.id
+            SubtaskIndex = $subtaskIndex
+            Display      = $text
+        }
+    }
+
+    return [pscustomobject]@{
+        TodoId       = $text
+        SubtaskIndex = $null
+        Display      = $text
+    }
 }
 
 function Resolve-LambdaTodoId {
@@ -821,23 +1017,11 @@ function Resolve-LambdaTodoId {
         [string] $ApiKey
     )
 
-    if ($null -ne $Value.PSObject.Properties['Id'] -and -not [string]::IsNullOrWhiteSpace([string] $Value.Id)) {
-        return [string] $Value.Id
+    $reference = Resolve-LambdaTodoReference -Value $Value -Uri $Uri -ApiKey $ApiKey
+    if ($null -ne $reference.SubtaskIndex) {
+        throw 'Subtask references are supported by complete. Use the parent to-do number for other commands.'
     }
-
-    $text = ([string] $Value).Trim()
-    $number = 0
-    if ([int]::TryParse($text, [ref] $number)) {
-        if (-not $script:LambdaTodoCacheLoaded) {
-            $null = @(Get-LambdaTodo -Raw -Uri $Uri -ApiKey $ApiKey)
-        }
-        if ($number -lt 1 -or $number -gt $script:LambdaTodoCache.Count) {
-            throw ('To-do number {0} is not in the current active list. Run todo to refresh the numbering.' -f $number)
-        }
-        return [string] $script:LambdaTodoCache[$number - 1].id
-    }
-
-    return $text
+    return [string] $reference.TodoId
 }
 
 function Set-LambdaTodo {
@@ -905,36 +1089,20 @@ function Set-LambdaTodo {
         -ContentType 'application/json; charset=utf-8' `
         -Body ($body | ConvertTo-Json -Depth 8)
 
-    if ($script:LambdaTodoCacheLoaded) {
-        $next = [System.Collections.Generic.List[object]]::new()
-        $matched = $false
-        foreach ($todoItem in $script:LambdaTodoCache) {
-            if ($todoItem.id -eq $updated.id) {
-                $matched = $true
-                if (-not $updated.completed) {
-                    $next.Add($updated)
-                }
-            }
-            else {
-                $next.Add($todoItem)
-            }
-        }
-        if (-not $matched -and -not $updated.completed) {
-            $next.Add($updated)
-        }
-        $script:LambdaTodoCache = $next.ToArray()
-        Set-LambdaTodoCountCache -Count $script:LambdaTodoCache.Count
-    }
+    Update-LambdaTodoCacheItem -Updated $updated
     return $updated
 }
 
 function Complete-LambdaTodo {
     <#
     .SYNOPSIS
-    Completes a Lambda to-do by UUID or by the number shown by todo.
+    Completes a Lambda to-do or a numbered subtask.
 
     .EXAMPLE
     complete 1
+
+    .EXAMPLE
+    complete 1.2
     #>
     [CmdletBinding()]
     param(
@@ -951,11 +1119,55 @@ function Complete-LambdaTodo {
     )
 
     process {
-        $updated = Set-LambdaTodo -Id $Id -Complete:(-not $Reopen) -Reopen:$Reopen -Uri $Uri -ApiKey $ApiKey
+        $reference = Resolve-LambdaTodoReference -Value $Id -Uri $Uri -ApiKey $ApiKey
+        if ($null -eq $reference.SubtaskIndex) {
+            $updated = Set-LambdaTodo -Id $reference.TodoId -Complete:(-not $Reopen) -Reopen:$Reopen -Uri $Uri -ApiKey $ApiKey
+            $verb = if ($Reopen) { 'Reopened' } else { 'Completed' }
+            Write-Host ('{0} {1}' -f $verb, $updated.title)
+            if ($PassThru) {
+                $updated
+            }
+            continue
+        }
+
+        if (-not $script:LambdaTodoCacheLoaded) {
+            $null = @(Get-LambdaTodo -Raw -Uri $Uri -ApiKey $ApiKey)
+        }
+        $todo = $script:LambdaTodoCache | Where-Object { $_.id -eq $reference.TodoId } | Select-Object -First 1
+        if ($null -eq $todo) {
+            throw 'Active to-do not found. Run todo to refresh the numbering.'
+        }
+
+        $subtasks = @(Expand-LambdaRestCollection -Value $todo.subtasks)
+        $targetIndex = [int] $reference.SubtaskIndex
+        if ($targetIndex -lt 0 -or $targetIndex -ge $subtasks.Count) {
+            throw ('Subtask {0} does not exist. Run todo to refresh the numbering.' -f $reference.Display)
+        }
+
+        $updatedSubtasks = [System.Collections.Generic.List[object]]::new()
+        for ($index = 0; $index -lt $subtasks.Count; $index++) {
+            $subtask = $subtasks[$index]
+            $updatedSubtasks.Add([ordered]@{
+                id        = $subtask.id
+                title     = $subtask.title
+                completed = if ($index -eq $targetIndex) { -not $Reopen } else { [bool] $subtask.completed }
+            })
+        }
+
+        $connection = Resolve-LambdaConnection -Uri $Uri -ApiKey $ApiKey
+        $body = @{ subtasks = $updatedSubtasks.ToArray() } | ConvertTo-Json -Depth 8
+        $updated = Invoke-RestMethod `
+            -Uri ('{0}/api/todos/{1}' -f $connection.Uri, $reference.TodoId) `
+            -Method Patch `
+            -Headers @{ Authorization = "Bearer $($connection.ApiKey)" } `
+            -ContentType 'application/json; charset=utf-8' `
+            -Body $body
+
+        Update-LambdaTodoCacheItem -Updated $updated
         $verb = if ($Reopen) { 'Reopened' } else { 'Completed' }
-        Write-Host ('{0} {1}' -f $verb, $updated.title)
+        Write-Host ('{0} {1} {2}' -f $verb, $reference.Display, $subtasks[$targetIndex].title)
         if ($PassThru) {
-            return $updated
+            $updated
         }
     }
 }
@@ -1010,7 +1222,7 @@ function Move-LambdaTodo {
 
     $script:LambdaTodoCache = $ordered
     $script:LambdaTodoCacheLoaded = $true
-    Set-LambdaTodoCountCache -Count $ordered.Count
+    Update-LambdaTodoSummaryCacheFromItems -Todos $ordered
     return ConvertTo-LambdaTodoView -Todos $ordered
 }
 
@@ -1034,7 +1246,7 @@ function Remove-LambdaTodo {
             -Headers @{ Authorization = "Bearer $($connection.ApiKey)" }
         if ($script:LambdaTodoCacheLoaded) {
             $script:LambdaTodoCache = @($script:LambdaTodoCache | Where-Object { $_.id -ne $resolvedId })
-            Set-LambdaTodoCountCache -Count $script:LambdaTodoCache.Count
+            Update-LambdaTodoSummaryCacheFromItems -Todos $script:LambdaTodoCache
         }
     }
 }
