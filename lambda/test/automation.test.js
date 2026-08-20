@@ -75,6 +75,11 @@ test('static API key supports create, partial update, filtering, and category re
 
 test('MCP endpoint exposes and executes note, todo, and category tools', async (context) => {
   const { base } = await startApp(context);
+  const modernMeta = {
+    'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+    'io.modelcontextprotocol/clientCapabilities': {},
+    'io.modelcontextprotocol/clientInfo': { name: 'lambda-test', version: '1.0.0' },
+  };
   const callMcp = async (method, params = {}) => {
     const headers = {
       authorization: 'Bearer automation-secret',
@@ -86,7 +91,12 @@ test('MCP endpoint exposes and executes note, todo, and category tools', async (
     return fetch(`${base}/mcp`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ jsonrpc: '2.0', id: `${method}-1`, method, params }),
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: `${method}-1`,
+        method,
+        params: { ...params, _meta: modernMeta },
+      }),
     });
   };
 
@@ -95,12 +105,19 @@ test('MCP endpoint exposes and executes note, todo, and category tools', async (
 
   const discovered = await callMcp('server/discover');
   assert.equal(discovered.status, 200);
-  assert.equal((await discovered.json()).result.supportedVersions[0], '2026-07-28');
+  const discoveryPayload = (await discovered.json()).result;
+  assert.equal(discoveryPayload.resultType, 'complete');
+  assert.equal(discoveryPayload.supportedVersions[0], '2026-07-28');
+  assert.equal(discoveryPayload.ttlMs, 300_000);
+  assert.equal(discoveryPayload.cacheScope, 'private');
+  assert.equal(discoveryPayload._meta['io.modelcontextprotocol/serverInfo'].version, '1.3.2');
 
   const listed = await callMcp('tools/list');
   const listedPayload = (await listed.json()).result;
   assert.equal(listedPayload.resultType, 'complete');
-  assert.equal(listedPayload._meta['io.modelcontextprotocol/serverInfo'].version, '1.3.0');
+  assert.equal(listedPayload.ttlMs, 300_000);
+  assert.equal(listedPayload.cacheScope, 'private');
+  assert.equal(listedPayload._meta['io.modelcontextprotocol/serverInfo'].version, '1.3.2');
   assert.ok(listedPayload.tools.some((tool) => tool.name === 'create_note'));
   assert.ok(listedPayload.tools.some((tool) => tool.name === 'create_todo'));
   assert.ok(listedPayload.tools.some((tool) => tool.name === 'rename_category'));
