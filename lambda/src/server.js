@@ -102,8 +102,8 @@ function withBlockTools(contents) {
   const html = contents.toString('utf8');
   if (html.includes('todo-tools.js')) return contents;
   return Buffer.from(html
-    .replace('</head>', '  <link rel="stylesheet" href="block-tools.css?v=1.3.4">\n  <link rel="stylesheet" href="todo-tools.css?v=1.3.4">\n</head>')
-    .replace('</body>', '  <script type="module" src="block-tools.js?v=1.3.4"></script>\n  <script type="module" src="todo-tools.js?v=1.3.4"></script>\n</body>'));
+    .replace('</head>', '  <link rel="stylesheet" href="block-tools.css?v=1.3.6">\n  <link rel="stylesheet" href="todo-tools.css?v=1.3.6">\n</head>')
+    .replace('</body>', '  <script type="module" src="block-tools.js?v=1.3.6"></script>\n  <script type="module" src="todo-tools.js?v=1.3.6"></script>\n</body>'));
 }
 
 function serveFile(response, filename) {
@@ -140,6 +140,14 @@ function normalizedTodoInput(body, current = null) {
     subtasks: has('subtasks') ? body.subtasks : (current?.subtasks || []),
     completed: has('completed') ? body.completed : Boolean(current?.completed),
   });
+}
+
+function todoSummaryDate(value) {
+  const date = String(value || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const parsed = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) return null;
+  return date;
 }
 
 function logMcpRequest(request, response) {
@@ -310,6 +318,12 @@ export function createApp(customConfig = {}) {
 
       if (pathname === '/api/todos/count' && request.method === 'GET') {
         return json(response, 200, { active: todos.countActive() });
+      }
+
+      if (pathname === '/api/todos/summary' && request.method === 'GET') {
+        const date = todoSummaryDate(url.searchParams.get('date') || new Date().toISOString().slice(0, 10));
+        if (!date) return json(response, 400, { error: 'date must use YYYY-MM-DD.' });
+        return json(response, 200, { date, ...todos.summaryForDate(date) });
       }
 
       if (pathname === '/api/todos/order' && request.method === 'PUT') {
