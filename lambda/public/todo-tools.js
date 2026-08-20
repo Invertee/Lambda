@@ -5,6 +5,7 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const state = {
   todos: [],
   loaded: false,
+  completedLoaded: false,
   completedExpanded: false,
   showing: false,
 };
@@ -125,7 +126,8 @@ async function showTodoView() {
   state.showing = true;
   $('#sidebar')?.classList.remove('open');
   document.body.classList.remove('sidebar-open');
-  await refreshTodos();
+  await refreshActiveTodos();
+  if (state.completedExpanded) await refreshCompletedTodos();
 }
 
 function formatDue(todo) {
@@ -240,8 +242,8 @@ function renderTodos() {
 
   $('#todos-count').textContent = active.length;
   $('#active-todos-count').textContent = `${active.length} active`;
-  $('#completed-todos-count').textContent = `${completed.length}`;
-  $('#clear-completed-todos').disabled = completed.length === 0;
+  $('#completed-todos-count').textContent = state.completedLoaded ? `${completed.length}` : '';
+  $('#clear-completed-todos').disabled = !state.completedLoaded || completed.length === 0;
 
   if (active.length) {
     $('#active-todos-list').replaceChildren(...active.map(todoCard));
@@ -252,12 +254,12 @@ function renderTodos() {
     $('#active-todos-list').replaceChildren(empty);
   }
 
-  if (completed.length) {
+  if (state.completedLoaded && completed.length) {
     $('#completed-todos-list').replaceChildren(...completed.map(todoCard));
   } else {
     const empty = document.createElement('div');
     empty.className = 'todo-empty compact';
-    empty.textContent = 'No completed to-dos yet.';
+    empty.textContent = state.completedLoaded ? 'No completed to-dos yet.' : 'Completed to-dos load when this section is opened.';
     $('#completed-todos-list').replaceChildren(empty);
   }
 
@@ -267,9 +269,11 @@ function renderTodos() {
   $('#completed-todos-toggle > span:last-child').textContent = state.completedExpanded ? 'Hide' : 'Show';
 }
 
-async function refreshTodos() {
+async function refreshActiveTodos() {
   try {
-    state.todos = await api('todos?include_completed=1');
+    const active = await api('todos');
+    const completed = state.todos.filter((todo) => todo.completed);
+    state.todos = [...active, ...completed];
     state.loaded = true;
     renderTodos();
   } catch (error) {
@@ -278,6 +282,23 @@ async function refreshTodos() {
       empty.className = 'todo-empty error';
       empty.textContent = error.message || 'To-Dos could not be loaded.';
       $('#active-todos-list').replaceChildren(empty);
+    }
+  }
+}
+
+async function refreshCompletedTodos() {
+  try {
+    const completed = await api('todos?completed=1');
+    const active = state.todos.filter((todo) => !todo.completed);
+    state.todos = [...active, ...completed];
+    state.completedLoaded = true;
+    renderTodos();
+  } catch (error) {
+    if (state.showing) {
+      const empty = document.createElement('div');
+      empty.className = 'todo-empty error';
+      empty.textContent = error.message || 'Completed To-Dos could not be loaded.';
+      $('#completed-todos-list').replaceChildren(empty);
     }
   }
 }
@@ -353,7 +374,8 @@ async function handleTodoChange(event) {
     }
   } catch (error) {
     window.alert(error.message || 'To-do could not be updated.');
-    await refreshTodos();
+    await refreshActiveTodos();
+    if (state.completedLoaded) await refreshCompletedTodos();
   }
 }
 
@@ -372,7 +394,11 @@ async function handleTodoClick(event) {
   if (event.target.closest('[data-remove-subtask]') && card) {
     event.target.closest('.todo-subtask')?.remove();
     try { await patchTodo(id, { subtasks: subtasksFromCard(card) }); }
-    catch (error) { window.alert(error.message || 'Subtask could not be removed.'); await refreshTodos(); }
+    catch (error) {
+      window.alert(error.message || 'Subtask could not be removed.');
+      await refreshActiveTodos();
+      if (state.completedLoaded) await refreshCompletedTodos();
+    }
     return;
   }
 
@@ -389,7 +415,7 @@ async function handleTodoClick(event) {
 }
 
 async function clearCompleted() {
-  if (!state.todos.some((todo) => todo.completed)) return;
+  if (!state.completedLoaded || !state.todos.some((todo) => todo.completed)) return;
   if (!window.confirm('Clear every completed to-do? This cannot be undone.')) return;
   try {
     await api('todos/completed', { method: 'DELETE' });
@@ -407,9 +433,10 @@ function wire() {
   $('#todo-create-form').addEventListener('submit', createTodo);
   $('#todos-view').addEventListener('change', handleTodoChange);
   $('#todos-view').addEventListener('click', handleTodoClick);
-  $('#completed-todos-toggle').addEventListener('click', () => {
+  $('#completed-todos-toggle').addEventListener('click', async () => {
     state.completedExpanded = !state.completedExpanded;
     renderTodos();
+    if (state.completedExpanded && !state.completedLoaded) await refreshCompletedTodos();
   });
   $('#clear-completed-todos').addEventListener('click', clearCompleted);
 
@@ -421,10 +448,10 @@ function wire() {
 
   const shell = $('#app-shell');
   const shellObserver = new MutationObserver(() => {
-    if (!shell.classList.contains('hidden') && !state.loaded) refreshTodos();
+    if (!shell.classList.contains('hidden') && !state.loaded) refreshActiveTodos();
   });
   shellObserver.observe(shell, { attributes: true, attributeFilter: ['class'] });
-  if (!shell.classList.contains('hidden')) refreshTodos();
+  if (!shell.classList.contains('hidden')) refreshActiveTodos();
 }
 
 wire();
