@@ -67,7 +67,6 @@ test('MCP gets and updates blocks by code including CSV content', () => {
 test('modern MCP discovery and tool listing use the final 2026 response envelope', () => {
   const database = new SnippetDatabase(':memory:');
   const meta = {
-    'io.modelcontextprotocol/protocolVersion': '2026-07-28',
     'io.modelcontextprotocol/clientInfo': { name: 'test-client', version: '1.0.0' },
     'io.modelcontextprotocol/clientCapabilities': {},
   };
@@ -92,7 +91,7 @@ test('modern MCP discovery and tool listing use the final 2026 response envelope
   assert.equal(listed.status, 200);
   assert.equal(listed.body.result.resultType, 'complete');
   assert.ok(listed.body.result.tools.some((tool) => tool.name === 'create_note'));
-  assert.equal(listed.body.result._meta['io.modelcontextprotocol/serverInfo'].version, '1.2.8');
+  assert.equal(listed.body.result._meta['io.modelcontextprotocol/serverInfo'].version, '1.2.9');
 
   const legacy = processMcpMessage(database, {
     jsonrpc: '2.0',
