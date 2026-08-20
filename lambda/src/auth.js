@@ -7,7 +7,7 @@ function digest(value) {
 export function apiKeyFrom(request) {
   const authorization = String(request.headers.authorization || '').trim();
   const bearer = authorization.match(/^Bearer\s+(.+)$/i);
-  const apiKeyScheme = authorization.match(/^Api-?Key\s+(.+)$/i);
+  const apiKeyScheme = authorization.match(/^Api(?:-|\s)?Key\s+(.+)$/i);
   const rawAuthorization = authorization && !authorization.includes(' ') ? authorization : '';
   return String(
     bearer?.[1]
