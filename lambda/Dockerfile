@@ -10,10 +10,11 @@ LABEL \
   io.hass.type="app" \
   io.hass.arch="${BUILD_ARCH}"
 
-RUN apk add --no-cache nodejs
+RUN apk add --no-cache nodejs npm
 
 WORKDIR /app
 COPY package.json ./
+RUN npm install --omit=dev --no-audit --no-fund
 COPY src ./src
 COPY public ./public
 COPY run.sh /run.sh
