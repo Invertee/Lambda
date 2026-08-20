@@ -4,7 +4,7 @@ import { toNodeHandler } from '@modelcontextprotocol/node';
 import { validateBlockCode, validateCategoryName, validateNote, validateTodo } from './validation.js';
 
 const SERVER_NAME = 'lambda-notes';
-const SERVER_VERSION = '1.3.4';
+const SERVER_VERSION = '1.3.6';
 
 const blockSchema = {
   type: 'object',
@@ -251,7 +251,7 @@ export const MCP_TOOLS = [
   {
     name: 'restore_note',
     title: 'Restore a note',
-    description: 'Restore a soft-deleted note from the recycle bin.',
+    description: 'Restore a soft-deleted note from the Lambda recycle bin.',
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'string', description: 'Note UUID.' } },
