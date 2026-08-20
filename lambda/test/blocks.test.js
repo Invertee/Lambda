@@ -86,8 +86,8 @@ test('REST block API accepts JSON and raw CSV and serves the enhanced web shell'
   assert.equal(fetched.block.content, 'Name,Status\nSpooler,Running');
 
   const shell = await fetch(base).then((response) => response.text());
-  assert.match(shell, /block-tools\.css\?v=1\.3\.4/);
-  assert.match(shell, /block-tools\.js\?v=1\.3\.4/);
-  assert.match(shell, /todo-tools\.css\?v=1\.3\.4/);
-  assert.match(shell, /todo-tools\.js\?v=1\.3\.4/);
+  assert.match(shell, /block-tools\.css\?v=1\.3\.6/);
+  assert.match(shell, /block-tools\.js\?v=1\.3\.6/);
+  assert.match(shell, /todo-tools\.css\?v=1\.3\.6/);
+  assert.match(shell, /todo-tools\.js\?v=1\.3\.6/);
 });
