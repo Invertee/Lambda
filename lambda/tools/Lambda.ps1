@@ -141,9 +141,17 @@ function ConvertTo-LambdaDueDate {
         return $Value.ToString('yyyy-MM-dd')
     }
 
+    $text = ([string] $Value).Trim()
+    if ($text -ieq 'today') {
+        return (Get-Date).ToString('yyyy-MM-dd')
+    }
+    if ($text -ieq 'tomorrow') {
+        return (Get-Date).Date.AddDays(1).ToString('yyyy-MM-dd')
+    }
+
     $parsed = [datetime]::MinValue
-    if (-not [datetime]::TryParse([string] $Value, [ref] $parsed)) {
-        throw 'DueDate must be a valid date.'
+    if (-not [datetime]::TryParse($text, [ref] $parsed)) {
+        throw 'DueDate must be a valid date, today, or tomorrow.'
     }
     return $parsed.ToString('yyyy-MM-dd')
 }
