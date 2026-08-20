@@ -5,34 +5,50 @@ import { SnippetDatabase } from '../src/database.js';
 import { TodoStore } from '../src/todo-store.js';
 import { validateTodo } from '../src/validation.js';
 
-test('todo storage lists active items by default and keeps completed items separate', () => {
+test('todo storage lists active items by priority and keeps completed items separate', () => {
   const database = new SnippetDatabase(':memory:');
   const todos = new TodoStore(database.db);
 
-  const active = todos.createTodo(validateTodo({
-    title: 'Active task',
+  const first = todos.createTodo(validateTodo({
+    title: 'First task',
     dueDate: '2026-08-21',
     subtasks: ['First step', 'Second step'],
   }));
-  const finished = todos.createTodo(validateTodo({ title: 'Finished task', subtasks: [] }));
-  todos.updateTodo(finished.id, validateTodo({
-    title: finished.title,
-    dueDate: finished.dueDate,
-    subtasks: finished.subtasks,
+  const second = todos.createTodo(validateTodo({ title: 'Second task', subtasks: [] }));
+
+  assert.equal(first.priority, 1);
+  assert.equal(second.priority, 2);
+  assert.equal(todos.countActive(), 2);
+
+  const reordered = todos.reorderActive([second.id, first.id]);
+  assert.deepEqual(reordered.map((todo) => todo.id), [second.id, first.id]);
+  assert.deepEqual(reordered.map((todo) => todo.priority), [1, 2]);
+
+  const finished = todos.updateTodo(second.id, validateTodo({
+    title: second.title,
+    dueDate: second.dueDate,
+    subtasks: second.subtasks,
     completed: true,
   }));
+  assert.equal(finished.completed, true);
+  assert.equal(todos.countActive(), 1);
+  assert.equal(todos.listTodos()[0].id, first.id);
 
-  assert.equal(todos.listTodos().length, 1);
-  assert.equal(todos.listTodos()[0].id, active.id);
-  assert.equal(todos.listTodos({ completedOnly: true }).length, 1);
-  assert.equal(todos.listTodos({ includeCompleted: true }).length, 2);
-  assert.equal(active.subtasks.length, 2);
-  assert.equal(active.dueDate, '2026-08-21');
+  const reopened = todos.updateTodo(second.id, validateTodo({
+    title: second.title,
+    dueDate: second.dueDate,
+    subtasks: second.subtasks,
+    completed: false,
+  }));
+  assert.equal(reopened.priority, 3);
+  assert.deepEqual(todos.listTodos().map((todo) => todo.id), [first.id, second.id]);
+  assert.equal(first.subtasks.length, 2);
+  assert.equal(first.dueDate, '2026-08-21');
 
   database.close();
 });
 
-test('todo REST API defaults to active items and can clear completed history', async (context) => {
+test('todo REST API defaults to active items, exposes count, reorders priority, and clears completed history', async (context) => {
   const database = new SnippetDatabase(':memory:');
   const todos = new TodoStore(database.db);
   const app = createApp({
@@ -52,7 +68,7 @@ test('todo REST API defaults to active items and can clear completed history', a
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const headers = { authorization: 'Bearer automation-secret', 'content-type': 'application/json' };
 
-  const created = await fetch(`${base}/api/todos`, {
+  const first = await fetch(`${base}/api/todos`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -61,10 +77,31 @@ test('todo REST API defaults to active items and can clear completed history', a
       subtasks: [{ title: 'Export configuration' }],
     }),
   }).then((response) => response.json());
-  assert.equal(created.completed, false);
-  assert.equal(created.subtasks[0].title, 'Export configuration');
+  const second = await fetch(`${base}/api/todos`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ title: 'Check migration', subtasks: [] }),
+  }).then((response) => response.json());
 
-  const completed = await fetch(`${base}/api/todos/${created.id}`, {
+  assert.equal(first.completed, false);
+  assert.equal(first.subtasks[0].title, 'Export configuration');
+  assert.equal(first.priority, 1);
+  assert.equal(second.priority, 2);
+
+  const count = await fetch(`${base}/api/todos/count`, { headers }).then((response) => response.json());
+  assert.equal(count.active, 2);
+
+  const reorderedResponse = await fetch(`${base}/api/todos/order`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ ids: [second.id, first.id] }),
+  });
+  assert.equal(reorderedResponse.status, 200);
+  const reordered = await reorderedResponse.json();
+  assert.deepEqual(reordered.map((todo) => todo.id), [second.id, first.id]);
+  assert.deepEqual(reordered.map((todo) => todo.priority), [1, 2]);
+
+  const completed = await fetch(`${base}/api/todos/${second.id}`, {
     method: 'PATCH',
     headers,
     body: JSON.stringify({ completed: true }),
@@ -73,12 +110,20 @@ test('todo REST API defaults to active items and can clear completed history', a
   assert.ok(completed.completedAt);
 
   const active = await fetch(`${base}/api/todos`, { headers }).then((response) => response.json());
-  assert.equal(active.length, 0);
+  assert.equal(active.length, 1);
+  assert.equal(active[0].id, first.id);
 
   const all = await fetch(`${base}/api/todos?include_completed=1`, { headers }).then((response) => response.json());
-  assert.equal(all.length, 1);
+  assert.equal(all.length, 2);
+
+  const staleOrder = await fetch(`${base}/api/todos/order`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ ids: [second.id, first.id] }),
+  });
+  assert.equal(staleOrder.status, 409);
 
   const cleared = await fetch(`${base}/api/todos/completed`, { method: 'DELETE', headers }).then((response) => response.json());
   assert.equal(cleared.deleted, 1);
-  assert.equal((await fetch(`${base}/api/todos?include_completed=1`, { headers }).then((response) => response.json())).length, 0);
+  assert.equal((await fetch(`${base}/api/todos?include_completed=1`, { headers }).then((response) => response.json())).length, 1);
 });
