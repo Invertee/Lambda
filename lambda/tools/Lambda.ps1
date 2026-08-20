@@ -1,6 +1,14 @@
-$script:LambdaHelperVersion = '1.3.4'
+$script:LambdaHelperVersion = '1.3.5'
 $script:LambdaHelperPath = $PSCommandPath
 $script:LambdaTodoCache = @()
+$script:LambdaTodoCacheLoaded = $false
+$script:LambdaTodoCountCacheRoot = if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    Join-Path $env:LOCALAPPDATA 'Lambda'
+}
+else {
+    Join-Path $HOME '.lambda'
+}
+$script:LambdaTodoCountCachePath = Join-Path $script:LambdaTodoCountCacheRoot 'todo-count.json'
 
 Update-TypeData -TypeName 'Lambda.TodoView' -DefaultDisplayPropertySet 'No','Due','Task','Steps' -Force
 
@@ -28,6 +36,7 @@ function Set-LambdaConnection {
         ApiKey = $ApiKey
     }
     $script:LambdaTodoCache = @()
+    $script:LambdaTodoCacheLoaded = $false
 }
 
 function Install-LambdaProfile {
@@ -72,7 +81,7 @@ function Install-LambdaProfile {
 $startMarker
 . '$escapedHelper'
 Set-LambdaConnection -Uri '$escapedUri' -ApiKey '$escapedApiKey'
-Show-LambdaTodoSummary -TimeoutMs 200
+Show-LambdaTodoSummary -TimeoutMs 225
 $endMarker
 "@
 
@@ -96,7 +105,7 @@ $endMarker
 
     Set-Content -LiteralPath $ProfilePath -Value $updated -Encoding utf8
     Set-LambdaConnection -Uri $Uri -ApiKey $ApiKey
-    Show-LambdaTodoSummary -TimeoutMs 200
+    Show-LambdaTodoSummary -TimeoutMs 225
 }
 
 function Resolve-LambdaConnection {
@@ -134,15 +143,56 @@ function Resolve-LambdaConnection {
     }
 }
 
+function Set-LambdaTodoCountCache {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateRange(0, 1000000)]
+        [int] $Count
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $script:LambdaTodoCountCacheRoot)) {
+            New-Item -ItemType Directory -Path $script:LambdaTodoCountCacheRoot -Force | Out-Null
+        }
+        [pscustomobject]@{
+            active    = $Count
+            updatedAt = (Get-Date).ToString('o')
+        } |
+            ConvertTo-Json -Compress |
+            Set-Content -LiteralPath $script:LambdaTodoCountCachePath -Encoding utf8
+    }
+    catch {
+    }
+}
+
+function Get-LambdaTodoCountCache {
+    try {
+        if (-not (Test-Path -LiteralPath $script:LambdaTodoCountCachePath)) {
+            return $null
+        }
+        $payload = Get-Content -LiteralPath $script:LambdaTodoCountCachePath -Raw | ConvertFrom-Json
+        if ($null -eq $payload -or $null -eq $payload.active) {
+            return $null
+        }
+        return [pscustomobject]@{
+            active    = [int] $payload.active
+            updatedAt = $payload.updatedAt
+        }
+    }
+    catch {
+        return $null
+    }
+}
+
 function Show-LambdaTodoSummary {
     <#
     .SYNOPSIS
-    Shows the active Lambda to-do count without delaying profile startup if Lambda is unavailable.
+    Shows the active Lambda to-do count with a hard startup wait and a local cached fallback.
     #>
     [CmdletBinding()]
     param(
-        [ValidateRange(50, 1000)]
-        [int] $TimeoutMs = 200,
+        [ValidateRange(50, 249)]
+        [int] $TimeoutMs = 225,
 
         [switch] $PassThru,
 
@@ -153,30 +203,35 @@ function Show-LambdaTodoSummary {
 
     $client = $null
     $request = $null
+    $response = $null
+    $freshCount = $null
+
     try {
         $connection = Resolve-LambdaConnection -Uri $Uri -ApiKey $ApiKey
         $client = [System.Net.Http.HttpClient]::new()
-        $client.Timeout = [TimeSpan]::FromMilliseconds($TimeoutMs)
+        $client.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan
         $request = [System.Net.Http.HttpRequestMessage]::new(
             [System.Net.Http.HttpMethod]::Get,
             ('{0}/api/todos/count' -f $connection.Uri)
         )
         $request.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $connection.ApiKey)
-        $response = $client.SendAsync($request).GetAwaiter().GetResult()
-        if (-not $response.IsSuccessStatusCode) {
-            return
-        }
-        $payload = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json
-        $count = [int] $payload.active
-        $suffix = if ($count -eq 1) { '' } else { 's' }
-        Write-Host ('Lambda {0} active to-do{1}' -f $count, $suffix)
-        if ($PassThru) {
-            return $count
+
+        $task = $client.SendAsync($request)
+        if ($task.Wait($TimeoutMs)) {
+            $response = $task.GetAwaiter().GetResult()
+            if ($response.IsSuccessStatusCode) {
+                $payload = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json
+                $freshCount = [int] $payload.active
+                Set-LambdaTodoCountCache -Count $freshCount
+            }
         }
     }
     catch {
     }
     finally {
+        if ($null -ne $response) {
+            $response.Dispose()
+        }
         if ($null -ne $request) {
             $request.Dispose()
         }
@@ -184,6 +239,49 @@ function Show-LambdaTodoSummary {
             $client.Dispose()
         }
     }
+
+    $cached = $null
+    $label = ''
+    if ($null -ne $freshCount) {
+        $count = $freshCount
+    }
+    else {
+        $cached = Get-LambdaTodoCountCache
+        if ($null -eq $cached) {
+            return
+        }
+        $count = [int] $cached.active
+        $label = ' cached'
+    }
+
+    $suffix = if ($count -eq 1) { '' } else { 's' }
+    Write-Host ('Lambda {0} active to-do{1}{2}' -f $count, $suffix, $label)
+    if ($PassThru) {
+        return $count
+    }
+}
+
+function Expand-LambdaRestCollection {
+    param(
+        [AllowNull()]
+        [object] $Value
+    )
+
+    $items = [System.Collections.Generic.List[object]]::new()
+    if ($null -eq $Value) {
+        return @()
+    }
+
+    if ($Value -is [System.Array] -or ($Value -is [System.Collections.IList] -and $Value -isnot [string])) {
+        foreach ($item in $Value) {
+            $items.Add($item)
+        }
+    }
+    else {
+        $items.Add($Value)
+    }
+
+    return $items.ToArray()
 }
 
 function ConvertTo-LambdaDueDate {
@@ -567,7 +665,7 @@ function ConvertTo-LambdaTodoView {
     )
 
     $number = 0
-    foreach ($todo in @($Todos)) {
+    foreach ($todo in $Todos) {
         $todoNumber = ''
         if (-not $todo.completed) {
             $number++
@@ -637,8 +735,9 @@ function New-LambdaTodo {
         -ContentType 'application/json; charset=utf-8' `
         -Body $body
 
-    if ($script:LambdaTodoCache.Count) {
+    if ($script:LambdaTodoCacheLoaded) {
         $script:LambdaTodoCache = @($script:LambdaTodoCache) + @($created)
+        Set-LambdaTodoCountCache -Count $script:LambdaTodoCache.Count
     }
     return $created
 }
@@ -692,12 +791,20 @@ function Get-LambdaTodo {
     }
     $suffix = if ($parameters.Count) { '?' + ($parameters -join '&') } else { '' }
 
-    $result = @(Invoke-RestMethod `
+    $response = Invoke-RestMethod `
         -Uri ('{0}/api/todos{1}' -f $connection.Uri, $suffix) `
         -Method Get `
-        -Headers @{ Authorization = "Bearer $($connection.ApiKey)" })
+        -Headers @{ Authorization = "Bearer $($connection.ApiKey)" }
+    $result = @(Expand-LambdaRestCollection -Value $response)
 
-    $script:LambdaTodoCache = @($result | Where-Object { -not $_.completed })
+    if (-not $CompletedOnly) {
+        $script:LambdaTodoCache = @($result | Where-Object { -not $_.completed })
+        $script:LambdaTodoCacheLoaded = $true
+        if ([string]::IsNullOrWhiteSpace($Query)) {
+            Set-LambdaTodoCountCache -Count $script:LambdaTodoCache.Count
+        }
+    }
+
     if ($Raw) {
         return $result
     }
@@ -721,7 +828,7 @@ function Resolve-LambdaTodoId {
     $text = ([string] $Value).Trim()
     $number = 0
     if ([int]::TryParse($text, [ref] $number)) {
-        if (-not $script:LambdaTodoCache.Count) {
+        if (-not $script:LambdaTodoCacheLoaded) {
             $null = @(Get-LambdaTodo -Raw -Uri $Uri -ApiKey $ApiKey)
         }
         if ($number -lt 1 -or $number -gt $script:LambdaTodoCache.Count) {
@@ -798,12 +905,25 @@ function Set-LambdaTodo {
         -ContentType 'application/json; charset=utf-8' `
         -Body ($body | ConvertTo-Json -Depth 8)
 
-    if ($updated.completed) {
-        $script:LambdaTodoCache = @($script:LambdaTodoCache | Where-Object { $_.id -ne $updated.id })
-    }
-    elseif ($script:LambdaTodoCache.Count) {
-        $existing = @($script:LambdaTodoCache | Where-Object { $_.id -ne $updated.id })
-        $script:LambdaTodoCache = $existing + @($updated)
+    if ($script:LambdaTodoCacheLoaded) {
+        $next = [System.Collections.Generic.List[object]]::new()
+        $matched = $false
+        foreach ($todoItem in $script:LambdaTodoCache) {
+            if ($todoItem.id -eq $updated.id) {
+                $matched = $true
+                if (-not $updated.completed) {
+                    $next.Add($updated)
+                }
+            }
+            else {
+                $next.Add($todoItem)
+            }
+        }
+        if (-not $matched -and -not $updated.completed) {
+            $next.Add($updated)
+        }
+        $script:LambdaTodoCache = $next.ToArray()
+        Set-LambdaTodoCountCache -Count $script:LambdaTodoCache.Count
     }
     return $updated
 }
@@ -880,14 +1000,17 @@ function Move-LambdaTodo {
 
     $connection = Resolve-LambdaConnection -Uri $Uri -ApiKey $ApiKey
     $body = @{ ids = @($items | ForEach-Object { $_.id }) } | ConvertTo-Json -Depth 4
-    $ordered = @(Invoke-RestMethod `
+    $response = Invoke-RestMethod `
         -Uri ('{0}/api/todos/order' -f $connection.Uri) `
         -Method Put `
         -Headers @{ Authorization = "Bearer $($connection.ApiKey)" } `
         -ContentType 'application/json; charset=utf-8' `
-        -Body $body)
+        -Body $body
+    $ordered = @(Expand-LambdaRestCollection -Value $response)
 
     $script:LambdaTodoCache = $ordered
+    $script:LambdaTodoCacheLoaded = $true
+    Set-LambdaTodoCountCache -Count $ordered.Count
     return ConvertTo-LambdaTodoView -Todos $ordered
 }
 
@@ -909,7 +1032,10 @@ function Remove-LambdaTodo {
             -Uri ('{0}/api/todos/{1}' -f $connection.Uri, $resolvedId) `
             -Method Delete `
             -Headers @{ Authorization = "Bearer $($connection.ApiKey)" }
-        $script:LambdaTodoCache = @($script:LambdaTodoCache | Where-Object { $_.id -ne $resolvedId })
+        if ($script:LambdaTodoCacheLoaded) {
+            $script:LambdaTodoCache = @($script:LambdaTodoCache | Where-Object { $_.id -ne $resolvedId })
+            Set-LambdaTodoCountCache -Count $script:LambdaTodoCache.Count
+        }
     }
 }
 
