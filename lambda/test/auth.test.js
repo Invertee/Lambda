@@ -23,6 +23,7 @@ test('accepts common API key header formats', () => {
     apiRequest({ authorization: `Bearer ${key}` }),
     apiRequest({ authorization: `ApiKey ${key}` }),
     apiRequest({ authorization: `Api-Key ${key}` }),
+    apiRequest({ authorization: `API key ${key}` }),
     apiRequest({ authorization: key }),
     apiRequest({ 'x-api-key': key }),
     apiRequest({ 'api-key': key }),
