@@ -8,6 +8,8 @@ const state = {
   completedLoaded: false,
   completedExpanded: false,
   showing: false,
+  draggingId: '',
+  savingOrder: false,
 };
 
 function apiUrl(path = '') {
@@ -143,13 +145,26 @@ function formatDue(todo) {
   return todo.dueDate < todayKey ? `Overdue · ${label}` : `Due ${label}`;
 }
 
+function dragHandle() {
+  const drag = document.createElement('button');
+  drag.type = 'button';
+  drag.className = 'todo-drag-handle';
+  drag.dataset.todoDrag = '';
+  drag.title = 'Drag to change priority';
+  drag.setAttribute('aria-label', 'Drag to change priority');
+  drag.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/></svg>';
+  return drag;
+}
+
 function todoCard(todo) {
   const card = document.createElement('article');
   card.className = `todo-card${todo.completed ? ' completed' : ''}`;
   card.dataset.todoId = todo.id;
+  card.dataset.priority = String(todo.priority || 0);
+  card.draggable = false;
 
   const main = document.createElement('div');
-  main.className = 'todo-main-row';
+  main.className = `todo-main-row${todo.completed ? '' : ' priority-enabled'}`;
 
   const complete = document.createElement('input');
   complete.type = 'checkbox';
@@ -201,6 +216,7 @@ function todoCard(todo) {
   remove.setAttribute('aria-label', 'Delete to-do');
   remove.innerHTML = '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"/></svg>';
 
+  if (!todo.completed) main.append(dragHandle());
   main.append(complete, body, remove);
   card.append(main);
   return card;
@@ -414,6 +430,68 @@ async function handleTodoClick(event) {
   }
 }
 
+function enableTodoDrag(event) {
+  const handle = event.target.closest('[data-todo-drag]');
+  if (!handle) return;
+  const card = handle.closest('[data-todo-id]');
+  if (card && !card.classList.contains('completed')) card.draggable = true;
+}
+
+function handleTodoDragStart(event) {
+  const card = event.target.closest('#active-todos-list [data-todo-id]');
+  if (!card || !card.draggable) {
+    event.preventDefault();
+    return;
+  }
+  state.draggingId = card.dataset.todoId;
+  card.classList.add('dragging');
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', state.draggingId);
+}
+
+function handleTodoDragOver(event) {
+  if (!state.draggingId) return;
+  const list = event.target.closest('#active-todos-list');
+  if (!list) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+
+  const dragging = $('.todo-card.dragging', list);
+  const target = event.target.closest('.todo-card:not(.dragging)');
+  if (!dragging || !target || target.parentElement !== list) return;
+  const rect = target.getBoundingClientRect();
+  if (event.clientY < rect.top + rect.height / 2) target.before(dragging);
+  else target.after(dragging);
+}
+
+async function saveTodoOrder() {
+  if (!state.draggingId || state.savingOrder) return;
+  state.savingOrder = true;
+  const list = $('#active-todos-list');
+  const ids = $$('.todo-card[data-todo-id]', list).map((card) => card.dataset.todoId);
+  try {
+    const active = await api('todos/order', { method: 'PUT', body: JSON.stringify({ ids }) });
+    const completed = state.todos.filter((todo) => todo.completed);
+    state.todos = [...active, ...completed];
+  } catch (error) {
+    window.alert(error.message || 'To-do priority could not be saved.');
+    await refreshActiveTodos();
+  } finally {
+    state.draggingId = '';
+    state.savingOrder = false;
+    renderTodos();
+  }
+}
+
+function handleTodoDragEnd(event) {
+  const card = event.target.closest('[data-todo-id]');
+  if (card) {
+    card.classList.remove('dragging');
+    card.draggable = false;
+  }
+  saveTodoOrder();
+}
+
 async function clearCompleted() {
   if (!state.completedLoaded || !state.todos.some((todo) => todo.completed)) return;
   if (!window.confirm('Clear every completed to-do? This cannot be undone.')) return;
@@ -433,6 +511,16 @@ function wire() {
   $('#todo-create-form').addEventListener('submit', createTodo);
   $('#todos-view').addEventListener('change', handleTodoChange);
   $('#todos-view').addEventListener('click', handleTodoClick);
+  $('#todos-view').addEventListener('pointerdown', enableTodoDrag);
+  $('#todos-view').addEventListener('dragstart', handleTodoDragStart);
+  $('#todos-view').addEventListener('dragover', handleTodoDragOver);
+  $('#todos-view').addEventListener('drop', (event) => event.preventDefault());
+  $('#todos-view').addEventListener('dragend', handleTodoDragEnd);
+  document.addEventListener('pointerup', () => {
+    $$('.todo-card[draggable="true"]', $('#active-todos-list')).forEach((card) => {
+      if (!card.classList.contains('dragging')) card.draggable = false;
+    });
+  });
   $('#completed-todos-toggle').addEventListener('click', async () => {
     state.completedExpanded = !state.completedExpanded;
     renderTodos();
