@@ -138,6 +138,24 @@ export class TodoStore {
     return Number(this.db.prepare('SELECT COUNT(*) AS count FROM todos WHERE completed_at IS NULL').get()?.count || 0);
   }
 
+  summaryForDate(dateKey) {
+    const row = this.db.prepare(`
+      SELECT
+        COUNT(*) AS active,
+        SUM(CASE WHEN due_date = ? THEN 1 ELSE 0 END) AS due_today,
+        SUM(CASE WHEN due_date < ? THEN 1 ELSE 0 END) AS overdue,
+        SUM(CASE WHEN due_date = date(?, '+1 day') THEN 1 ELSE 0 END) AS due_tomorrow
+      FROM todos
+      WHERE completed_at IS NULL
+    `).get(dateKey, dateKey, dateKey);
+    return {
+      active: Number(row?.active || 0),
+      dueToday: Number(row?.due_today || 0),
+      overdue: Number(row?.overdue || 0),
+      dueTomorrow: Number(row?.due_tomorrow || 0),
+    };
+  }
+
   getTodo(id) {
     return this.todoFromRow(this.db.prepare('SELECT * FROM todos WHERE id = ?').get(String(id)));
   }
