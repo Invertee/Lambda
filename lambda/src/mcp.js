@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { validateBlockCode, validateCategoryName, validateNote } from './validation.js';
+import { validateBlockCode, validateCategoryName, validateNote, validateTodo } from './validation.js';
 
 export const MCP_PROTOCOL_VERSION = '2026-07-28';
 const LEGACY_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 const SUPPORTED_PROTOCOL_VERSIONS = [MCP_PROTOCOL_VERSION, ...LEGACY_PROTOCOL_VERSIONS];
-const SERVER_INFO = { name: 'lambda-notes', version: '1.2.9' };
+const SERVER_INFO = { name: 'lambda-notes', version: '1.3.0' };
 const SERVER_INFO_META_KEY = 'io.modelcontextprotocol/serverInfo';
 const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion';
 const CLIENT_INFO_META_KEY = 'io.modelcontextprotocol/clientInfo';
@@ -32,7 +32,110 @@ const noteFields = {
   language: { type: 'string', description: 'Language used when content_type is code.' },
 };
 
+const subtaskSchema = {
+  type: 'object',
+  properties: {
+    id: { type: 'string', description: 'Optional stable subtask ID.' },
+    title: { type: 'string', maxLength: 300 },
+    completed: { type: 'boolean', default: false },
+  },
+  required: ['title'],
+  additionalProperties: false,
+};
+
+const todoFields = {
+  title: { type: 'string', maxLength: 300, description: 'To-do title.' },
+  due_date: { type: ['string', 'null'], pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Optional due date in YYYY-MM-DD format.' },
+  subtasks: { type: 'array', maxItems: 100, items: subtaskSchema },
+  completed: { type: 'boolean', description: 'Whether the to-do is completed.' },
+};
+
 export const MCP_TOOLS = [
+  {
+    name: 'list_todos',
+    title: 'List to-dos',
+    description: 'List active to-dos by default. Completed to-dos are excluded unless explicitly requested.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Case-insensitive search across to-do and subtask titles.' },
+        include_completed: { type: 'boolean', default: false, description: 'Include active and completed to-dos.' },
+        completed_only: { type: 'boolean', default: false, description: 'Return only completed to-dos.' },
+      },
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: 'get_todo',
+    title: 'Get a to-do',
+    description: 'Get one to-do including due date, completion state, and subtasks.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'To-do UUID.' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: 'create_todo',
+    title: 'Create a to-do',
+    description: 'Create a new active to-do with an optional due date and subtasks.',
+    inputSchema: {
+      type: 'object',
+      properties: todoFields,
+      required: ['title'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
+    name: 'update_todo',
+    title: 'Update a to-do',
+    description: 'Partially update a to-do title, due date, subtasks, or completion state.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'To-do UUID.' }, ...todoFields },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: 'complete_todo',
+    title: 'Complete or reopen a to-do',
+    description: 'Mark a to-do complete. Set completed to false to reopen it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'To-do UUID.' },
+        completed: { type: 'boolean', default: true },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: 'delete_todo',
+    title: 'Delete a to-do',
+    description: 'Permanently delete one to-do.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'To-do UUID.' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: 'clear_completed_todos',
+    title: 'Clear completed to-dos',
+    description: 'Permanently delete every completed to-do while leaving active to-dos untouched.',
+    inputSchema: { type: 'object', additionalProperties: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  },
   {
     name: 'list_notes',
     title: 'List and search notes',
@@ -226,7 +329,55 @@ function requireResult(value, message) {
   return value;
 }
 
+function requireTodos(todos) {
+  if (!todos) throw new Error('To-do storage is unavailable.');
+  return todos;
+}
+
+function mergeTodo(todos, args) {
+  const store = requireTodos(todos);
+  const current = requireResult(store.getTodo(String(args.id || '')), 'To-do not found.');
+  const has = (key) => Object.hasOwn(args, key);
+  return validateTodo({
+    title: has('title') ? args.title : current.title,
+    dueDate: has('due_date') ? args.due_date : current.dueDate,
+    subtasks: has('subtasks') ? args.subtasks : current.subtasks,
+    completed: has('completed') ? args.completed : current.completed,
+  });
+}
+
 const toolHandlers = {
+  list_todos: (database, args, todos) => requireTodos(todos).listTodos({
+    includeCompleted: Boolean(args.include_completed),
+    completedOnly: Boolean(args.completed_only),
+    search: args.query || '',
+  }),
+  get_todo: (database, args, todos) => requireResult(requireTodos(todos).getTodo(String(args.id || '')), 'To-do not found.'),
+  create_todo: (database, args, todos) => requireTodos(todos).createTodo(validateTodo({
+    title: args.title,
+    dueDate: args.due_date,
+    subtasks: args.subtasks || [],
+    completed: Boolean(args.completed),
+  })),
+  update_todo: (database, args, todos) => requireResult(
+    requireTodos(todos).updateTodo(String(args.id || ''), mergeTodo(todos, args)),
+    'To-do not found.',
+  ),
+  complete_todo: (database, args, todos) => {
+    const store = requireTodos(todos);
+    const current = requireResult(store.getTodo(String(args.id || '')), 'To-do not found.');
+    return store.updateTodo(current.id, validateTodo({
+      title: current.title,
+      dueDate: current.dueDate,
+      subtasks: current.subtasks,
+      completed: args.completed === undefined ? true : Boolean(args.completed),
+    }));
+  },
+  delete_todo: (database, args, todos) => ({
+    deleted: requireResult(requireTodos(todos).deleteTodo(String(args.id || '')), 'To-do not found.'),
+    id: String(args.id || ''),
+  }),
+  clear_completed_todos: (database, args, todos) => ({ deleted: requireTodos(todos).clearCompleted() }),
   list_notes: (database, args) => listNotes(database, args),
   get_note: (database, args) => requireResult(database.getNote(String(args.id || '')), 'Note not found.'),
   get_block: (database, args) => requireResult(database.getBlock(validateBlockCode(args.code)), 'Active block not found.'),
@@ -292,7 +443,7 @@ function toolResult(value, isError = false, modern = false) {
   return modern ? { resultType: 'complete', ...payload } : payload;
 }
 
-export function processMcpMessage(database, message) {
+export function processMcpMessage(database, message, todos = null) {
   if (!message || typeof message !== 'object' || Array.isArray(message) || message.jsonrpc !== '2.0' || typeof message.method !== 'string') {
     return { status: 400, body: protocolError(message?.id, -32600, 'Invalid Request') };
   }
@@ -308,7 +459,7 @@ export function processMcpMessage(database, message) {
         resultType: 'complete',
         supportedVersions: SUPPORTED_PROTOCOL_VERSIONS,
         capabilities: { tools: {} },
-        instructions: 'Use note and block tools to search, create, update, categorise, soft-delete, restore, and address individual Lambda blocks by code.',
+        instructions: 'Use Lambda tools to manage notes, directly address note blocks, and track active or completed to-dos with due dates and subtasks.',
       }, true),
     };
   }
@@ -322,7 +473,7 @@ export function processMcpMessage(database, message) {
         protocolVersion,
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
-        instructions: 'Use note and block tools to search, create, update, categorise, soft-delete, restore, and address individual Lambda blocks by code.',
+        instructions: 'Use Lambda tools to manage notes, directly address note blocks, and track active or completed to-dos with due dates and subtasks.',
       }),
     };
   }
@@ -345,7 +496,7 @@ export function processMcpMessage(database, message) {
       return { status: 400, body: protocolError(message.id, -32602, 'Tool arguments must be an object.') };
     }
     try {
-      return { status: 200, body: result(message.id, toolResult(handler(database, args || {}), false, modern), modern) };
+      return { status: 200, body: result(message.id, toolResult(handler(database, args || {}, todos), false, modern), modern) };
     } catch (error) {
       return { status: 200, body: result(message.id, toolResult(error.message || 'Tool call failed.', true, modern), modern) };
     }
