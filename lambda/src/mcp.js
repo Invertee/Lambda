@@ -4,11 +4,9 @@ import { validateBlockCode, validateCategoryName, validateNote, validateTodo } f
 export const MCP_PROTOCOL_VERSION = '2026-07-28';
 const LEGACY_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 const SUPPORTED_PROTOCOL_VERSIONS = [MCP_PROTOCOL_VERSION, ...LEGACY_PROTOCOL_VERSIONS];
-const SERVER_INFO = { name: 'lambda-notes', version: '1.3.0' };
+const SERVER_INFO = { name: 'lambda-notes', version: '1.3.2' };
 const SERVER_INFO_META_KEY = 'io.modelcontextprotocol/serverInfo';
 const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion';
-const CLIENT_INFO_META_KEY = 'io.modelcontextprotocol/clientInfo';
-const CLIENT_CAPABILITIES_META_KEY = 'io.modelcontextprotocol/clientCapabilities';
 
 const blockSchema = {
   type: 'object',
@@ -413,14 +411,13 @@ function isModernMessage(message) {
   if (message.method === 'server/discover') return true;
   const meta = message.params?._meta;
   if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return false;
-  return meta[PROTOCOL_VERSION_META_KEY] === MCP_PROTOCOL_VERSION
-    || Object.hasOwn(meta, CLIENT_INFO_META_KEY)
-    || Object.hasOwn(meta, CLIENT_CAPABILITIES_META_KEY);
+  return meta[PROTOCOL_VERSION_META_KEY] === MCP_PROTOCOL_VERSION;
 }
 
 function withModernMeta(value, modern) {
   if (!modern || !value || typeof value !== 'object' || Array.isArray(value)) return value;
   return {
+    resultType: value.resultType || 'complete',
     ...value,
     _meta: {
       ...(value._meta || {}),
@@ -464,6 +461,8 @@ export function processMcpMessage(database, message, todos = null, protocolVersi
         supportedVersions: SUPPORTED_PROTOCOL_VERSIONS,
         capabilities: { tools: {} },
         instructions: 'Use Lambda tools to manage notes, directly address note blocks, and track active or completed to-dos with due dates and subtasks.',
+        ttlMs: 300_000,
+        cacheScope: 'private',
       }, true),
     };
   }
@@ -486,7 +485,7 @@ export function processMcpMessage(database, message, todos = null, protocolVersi
 
   if (message.method === 'tools/list') {
     const payload = modern
-      ? { resultType: 'complete', tools: MCP_TOOLS, ttlMs: 300_000, cacheScope: 'public' }
+      ? { resultType: 'complete', tools: MCP_TOOLS, ttlMs: 300_000, cacheScope: 'private' }
       : { tools: MCP_TOOLS };
     return { status: 200, body: result(message.id, payload, modern) };
   }
