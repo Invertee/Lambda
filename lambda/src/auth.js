@@ -5,9 +5,19 @@ function digest(value) {
 }
 
 export function apiKeyFrom(request) {
-  const authorization = String(request.headers.authorization || '');
+  const authorization = String(request.headers.authorization || '').trim();
   const bearer = authorization.match(/^Bearer\s+(.+)$/i);
-  return String(bearer?.[1] || request.headers['x-api-key'] || '');
+  const apiKeyScheme = authorization.match(/^Api-?Key\s+(.+)$/i);
+  const rawAuthorization = authorization && !authorization.includes(' ') ? authorization : '';
+  return String(
+    bearer?.[1]
+    || apiKeyScheme?.[1]
+    || rawAuthorization
+    || request.headers['x-api-key']
+    || request.headers['api-key']
+    || request.headers['x-api_key']
+    || '',
+  ).trim();
 }
 
 export function apiKeyMatches(request, expected) {
