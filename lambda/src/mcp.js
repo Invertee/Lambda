@@ -4,9 +4,11 @@ import { validateBlockCode, validateCategoryName, validateNote } from './validat
 export const MCP_PROTOCOL_VERSION = '2026-07-28';
 const LEGACY_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 const SUPPORTED_PROTOCOL_VERSIONS = [MCP_PROTOCOL_VERSION, ...LEGACY_PROTOCOL_VERSIONS];
-const SERVER_INFO = { name: 'lambda-notes', version: '1.2.8' };
+const SERVER_INFO = { name: 'lambda-notes', version: '1.2.9' };
 const SERVER_INFO_META_KEY = 'io.modelcontextprotocol/serverInfo';
 const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion';
+const CLIENT_INFO_META_KEY = 'io.modelcontextprotocol/clientInfo';
+const CLIENT_CAPABILITIES_META_KEY = 'io.modelcontextprotocol/clientCapabilities';
 
 const blockSchema = {
   type: 'object',
@@ -254,7 +256,11 @@ const toolHandlers = {
 
 function isModernMessage(message) {
   if (message.method === 'server/discover') return true;
-  return message.params?._meta?.[PROTOCOL_VERSION_META_KEY] === MCP_PROTOCOL_VERSION;
+  const meta = message.params?._meta;
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return false;
+  return meta[PROTOCOL_VERSION_META_KEY] === MCP_PROTOCOL_VERSION
+    || Object.hasOwn(meta, CLIENT_INFO_META_KEY)
+    || Object.hasOwn(meta, CLIENT_CAPABILITIES_META_KEY);
 }
 
 function withModernMeta(value, modern) {
