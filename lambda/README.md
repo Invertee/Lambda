@@ -1,12 +1,13 @@
 # Lambda
 
-Lambda is a small, self-hosted notes and script library designed to run as a Home Assistant add-on. Notes are assembled from text, code, CSV table, image, and file-attachment blocks. They autosave continuously and are organised with one-level categories and tags.
+Lambda is a small, self-hosted notes, to-do, and script library designed to run as a Home Assistant add-on. Notes are assembled from text, code, CSV table, image, and file-attachment blocks, while To-Dos are kept in a separate task view with due dates, subtasks, and completion history.
 
 ## Highlights
 
 - Single-user password authentication with rate limiting and secure, HTTP-only cookies that expire after 30 days of inactivity by default
-- AES-256-GCM encryption at rest for note titles, block content, version content, and attachments
-- Stable five-character alphanumeric codes on every block for direct REST, MCP, and script access
+- AES-256-GCM encryption at rest for note titles, block content, version content, attachment contents, To-Do titles, and To-Do subtasks
+- Separate Microsoft To Do-style task tracking with active/completed piles, optional due dates, and subtasks
+- Stable five-character alphanumeric codes on every note block for direct REST, MCP, and script access
 - Text, code, editable CSV table, compressed image, and disk-backed file-attachment blocks
 - CSV tables can be edited in the web interface and downloaded as standard `.csv` files
 - Drag, button-based reorder, remove, and one-click code copying or downloading
@@ -15,7 +16,8 @@ Lambda is a small, self-hosted notes and script library designed to run as a Hom
 - A browsable table for all notes, category views, tag views, and search results
 - Recycle bin plus a rolling 20-snapshot version history per note
 - REST and MCP automation interfaces protected by a separate static API key
-- Installable PWA with an IndexedDB snapshot for offline, read-only viewing
+- PowerShell helpers for note blocks and To-Dos using one saved Lambda connection
+- Installable PWA with an IndexedDB snapshot for offline, read-only note viewing
 - SQLite WAL database with no runtime npm dependencies
 - Responsive desktop and mobile layouts
 
@@ -32,17 +34,30 @@ Open `http://localhost:8099`. The local database is created at `data/snippet.db`
 
 ## Encryption at rest
 
-Lambda creates a random 256-bit data-encryption key on first start. That key is wrapped with a key derived from the configured app password using scrypt and stored beside the database as `snippet.db.encryption.json`. Note titles, note blocks, version titles, version blocks, and attachment file contents are encrypted with AES-256-GCM before being written to disk. Each encrypted value uses a fresh nonce and authenticated associated data tied to its record.
+Lambda creates a random 256-bit data-encryption key on first start. That key is wrapped with a key derived from the configured app password using scrypt and stored beside the database as `snippet.db.encryption.json`. Note titles, note blocks, version titles, version blocks, To-Do titles, To-Do subtasks, and attachment file contents are encrypted with AES-256-GCM before being written to disk. Each encrypted value uses a fresh nonce and authenticated associated data tied to its record.
 
-Categories, tags, record IDs, timestamps, block codes, session metadata, and other structural database information remain plaintext so filtering, indexing, and automation continue to work normally. REST, MCP, and PowerShell/API clients receive decrypted data from the running Lambda service and require no encryption changes.
+Categories, tags, record IDs, timestamps, block codes, To-Do due dates/completion timestamps, session metadata, and other structural database information remain plaintext so filtering, indexing, and automation continue to work normally. REST, MCP, and PowerShell/API clients receive decrypted data from the running Lambda service and require no encryption changes.
 
 The encryption metadata file contains the salt and wrapped data key, not the plaintext key. Keep `snippet.db`, `snippet.db.encryption.json`, and the `attachments` directory together when backing up the app. The configured app password is required to unwrap the data key after restart; changing or losing that password without first rewrapping the key will make the encrypted data inaccessible.
 
 The browser's IndexedDB offline snapshot and manually exported Lambda JSON backups remain plaintext on the device where they are created.
 
+## To-Dos
+
+To-Dos are separate from notes and appear above **All notes** in the sidebar. Active tasks are shown in the main To-Do list. Checking a task marks it complete, strikes it through, and moves it into the completed pile. Completed items can be reopened individually or cleared permanently as a group.
+
+Each To-Do supports:
+
+- a title
+- an optional `YYYY-MM-DD` due date
+- up to 100 subtasks/steps with independent completion state
+- active/completed state and completion timestamp
+
+The default REST, MCP, and PowerShell list operations return **active To-Dos only**. Completed history is queried only when explicitly requested, avoiding unnecessary decryption and payload size as the completed list grows.
+
 ## Block codes
 
-Every block receives a globally unique five-character uppercase alphanumeric code such as `A1B2C`. The code is assigned by the server, returned as the block's `code` property, displayed in the web editor, and can be copied with one click.
+Every note block receives a globally unique five-character uppercase alphanumeric code such as `A1B2C`. The code is assigned by the server, returned as the block's `code` property, displayed in the web editor, and can be copied with one click.
 
 A code stays attached to the same block when its content changes or when the block is reordered. Codes are retained as tombstones when blocks are removed so they are not reassigned to a different block. Blocks inside notes in the recycle bin are unavailable through the block API; restoring the note reactivates the original codes.
 
@@ -64,9 +79,35 @@ W32Time,Stopped
 
 ## Automation API
 
-Set `API_KEY` (or `api_key` in the Home Assistant add-on configuration) to a long, random secret. Automation can then use either `Authorization: Bearer <key>` or `X-API-Key: <key>`; browser sessions continue to use the login cookie. Keep the endpoint behind HTTPS because the key grants write access.
+Set `API_KEY` (or `api_key` in the Home Assistant add-on configuration) to a long, random secret. Automation can then use either `Authorization: Bearer <key>` or the supported API-key header forms; browser sessions continue to use the login cookie. Keep the endpoint behind HTTPS because the key grants write access.
 
-The main REST operations are:
+The main To-Do REST operations are:
+
+- `GET /api/todos` — active To-Dos only
+- `GET /api/todos?include_completed=1` — active and completed To-Dos
+- `GET /api/todos?completed=1` — completed To-Dos only
+- `GET /api/todos?q=search` — search active To-Dos and subtasks
+- `POST /api/todos` — create a To-Do
+- `GET /api/todos/:id` — retrieve one To-Do
+- `PATCH /api/todos/:id` — partially update title, due date, subtasks, or completion state
+- `PUT /api/todos/:id` — replace a To-Do payload
+- `DELETE /api/todos/:id` — permanently delete one To-Do
+- `DELETE /api/todos/completed` — permanently clear all completed To-Dos
+
+Example:
+
+```json
+{
+  "title": "Review tenant configuration",
+  "dueDate": "2026-08-22",
+  "subtasks": [
+    { "title": "Export Conditional Access policies" },
+    { "title": "Review exclusions" }
+  ]
+}
+```
+
+The main note REST operations are:
 
 - `GET /api/notes?q=&category=&tag=&trash=1` — list or filter notes
 - `POST /api/notes` — create a complete structured note
@@ -120,54 +161,47 @@ Install-LambdaProfile -Uri 'https://notes.example.com' -ApiKey $api
 
 `Install-LambdaProfile` adds the helper path and `Set-LambdaConnection` call to the current `$PROFILE`. The API key is therefore stored as plaintext in the PowerShell profile file. You can also skip the installer and continue to use `LAMBDA_URL` and `LAMBDA_API_KEY` environment variables.
 
-The helper exposes the original commands plus shorter aliases:
+The note/block aliases are:
 
 - `New-Snip` → `New-LambdaNote`
 - `Get-Snip` → `Get-LambdaBlock`
 - `Set-Snip` → `Set-LambdaBlock`
 
-`New-Snip` accepts `-Name` as an alias for `-Title` and defaults new notes to the `Snippets` category.
+The To-Do aliases are:
 
-Structured PowerShell pipeline objects automatically become CSV table blocks. Arrays passed through `-Content` are expanded into their individual objects instead of being serialised as `System.Object[]` metadata. Where PowerShell exposes a default display property set, Lambda uses those display properties as the table columns; otherwise the object's readable properties are used.
+- `New-Todo` → `New-LambdaTodo`
+- `Get-Todo` → `Get-LambdaTodo`
+- `Set-Todo` → `Set-LambdaTodo`
+- `Complete-Todo` → `Complete-LambdaTodo`
+- `Remove-Todo` → `Remove-LambdaTodo`
+- `Clear-CompletedTodo` → `Clear-LambdaCompletedTodo`
 
-For example:
+Examples:
+
+```powershell
+New-Todo -Name 'Review tenant' -DueDate tomorrow `
+  -Subtask 'Export configuration','Review exclusions'
+
+Get-Todo
+Get-Todo -IncludeCompleted
+Get-Todo -CompletedOnly
+
+Set-Todo $todoId -DueDate '2026-08-30'
+Complete-Todo $todoId
+Complete-Todo $todoId -Reopen
+Remove-Todo $todoId
+Clear-CompletedTodo
+```
+
+`Get-Todo` returns active tasks only unless `-IncludeCompleted` or `-CompletedOnly` is supplied.
+
+`New-Snip` accepts `-Name` as an alias for `-Title` and defaults new notes to the `Snippets` category. Structured PowerShell pipeline objects automatically become CSV table blocks. Arrays passed through `-Content` are expanded into their individual objects instead of being serialised as `System.Object[]` metadata. Where PowerShell exposes a default display property set, Lambda uses those display properties as the table columns; otherwise the object's readable properties are used.
 
 ```powershell
 Get-NetAdapter | New-Snip -Name 'net adaptors'
-```
 
-No `-Category`, `-BlockType`, `-Uri`, or `-ApiKey` parameters are required after the profile has been configured. String pipelines remain normal text blocks unless a block type is explicitly supplied.
-
-Create a code note explicitly:
-
-```powershell
-New-Snip -Name 'Restart service' -Category 'PowerShell' `
-  -Tags admin,windows -BlockType code -Language powershell `
-  -Content 'Restart-Service Spooler'
-```
-
-An array can also be passed directly:
-
-```powershell
-$adapters = Get-NetAdapter
-New-Snip -Name 'net adaptors' -Content $adapters
-```
-
-Replace an existing block with structured command output. Structured objects automatically convert the target to a CSV table:
-
-```powershell
 Get-Process | Select-Object Name, Id, CPU | Set-Snip C3D4E
-```
 
-Replace an existing block with normal text:
-
-```powershell
-Get-Content .\latest-output.txt | Set-Snip A1B2C
-```
-
-Retrieve a block or convert a CSV block back into PowerShell objects:
-
-```powershell
 Get-Snip A1B2C
 Get-Snip C3D4E -ContentOnly
 Get-Snip C3D4E -AsTable
@@ -177,17 +211,27 @@ Get-Snip C3D4E -AsTable
 
 The stateless Streamable HTTP endpoint is `POST /mcp`. Configure an MCP client with that URL and an API key. Lambda accepts bearer authorization and common API-key header formats. The server supports the current `2026-07-28` protocol and the legacy initialize flow used by `2025-11-25`, `2025-06-18`, and `2025-03-26` clients.
 
-Its tools are `list_notes`, `get_note`, `get_block`, `update_block`, `create_note`, `update_note`, `delete_note`, `restore_note`, `list_categories`, `create_category`, `rename_category`, and `delete_category`. `get_block` and `update_block` address a block directly with its five-character code; CSV data is passed as standard CSV text in `content`. Deletes are recoverable: the MCP interface deliberately moves notes to the recycle bin and does not expose permanent deletion.
+To-Do tools are:
+
+- `list_todos` — active only by default, with opt-in completed history
+- `get_todo`
+- `create_todo`
+- `update_todo`
+- `complete_todo`
+- `delete_todo`
+- `clear_completed_todos`
+
+Note/block/category tools are `list_notes`, `get_note`, `get_block`, `update_block`, `create_note`, `update_note`, `delete_note`, `restore_note`, `list_categories`, `create_category`, `rename_category`, and `delete_category`.
+
+`get_block` and `update_block` address a note block directly with its five-character code; CSV data is passed as standard CSV text in `content`. Note deletes are recoverable through the recycle bin. To-Do deletes and clearing completed To-Dos are permanent.
 
 ### ChatGPT Business
 
 ChatGPT Business supports custom MCP apps in Developer Mode. Lambda must be reachable from ChatGPT over HTTPS unless Secure MCP Tunnel is being used.
 
-Create a custom app in ChatGPT and use the Lambda MCP URL, for example `https://notes.example.com/mcp`. Choose **API key** authentication and enter the same `api_key` configured for Lambda, then scan the server tools. A successful scan should expose the Lambda note, block, and category actions listed above.
+Create a custom app in ChatGPT and use the Lambda MCP URL, for example `https://notes.example.com/mcp`. Choose **API key** authentication with a **Bearer** API key and enter the raw `api_key` configured for Lambda. Then scan the server tools.
 
-If Lambda is upgraded after the custom app was created, use **Refresh** or scan the tools again. ChatGPT snapshots custom app tool definitions rather than continuously re-reading them. On ChatGPT Business, a published custom app may need to be recreated and republished when its MCP tool definitions change.
-
-If the app shows as connected with API-key authorization but reports no actions, first confirm Lambda is on version 1.2.8 or later and then refresh/recreate the draft app. Lambda 1.2.8 aligns its modern MCP response envelope with the final `2026-07-28` specification and broadens API-key header compatibility.
+After Lambda's MCP tool definitions change, refresh or recreate the draft custom app so ChatGPT scans the current action catalogue. Lambda 1.2.9 and later includes the modern `2026-07-28` action-discovery compatibility path.
 
 ## Home Assistant app
 
@@ -199,8 +243,10 @@ The app supports Home Assistant Ingress and also publishes port `8099` for a sep
 
 ## Backups
 
-For a consistent manual backup, stop the app and copy `snippet.db`, `snippet.db.encryption.json`, and the `attachments` folder together. Home Assistant app backups include the mapped app configuration directory. SQLite WAL files may be present while the app is running.
+Lambda JSON exports now include To-Dos as well as notes, recycled notes, categories, tags, and version history. Older version-1 JSON backups that do not contain a `todos` array are still accepted and restore with an empty To-Do list.
+
+For a consistent manual filesystem backup, stop the app and copy `snippet.db`, `snippet.db.encryption.json`, and the `attachments` folder together. Home Assistant app backups include the mapped app configuration directory. SQLite WAL files may be present while the app is running.
 
 ## Version behavior
 
-A snapshot is captured before the first change in an editing session. Long-running sessions rotate to a new snapshot window after five minutes. Restoring a version first snapshots the current note, and only the newest 20 snapshots are retained.
+A note snapshot is captured before the first change in an editing session. Long-running sessions rotate to a new snapshot window after five minutes. Restoring a version first snapshots the current note, and only the newest 20 snapshots are retained.
