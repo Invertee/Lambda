@@ -4,6 +4,9 @@ import { validateBlockCode, validateCategoryName, validateNote } from './validat
 export const MCP_PROTOCOL_VERSION = '2026-07-28';
 const LEGACY_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 const SUPPORTED_PROTOCOL_VERSIONS = [MCP_PROTOCOL_VERSION, ...LEGACY_PROTOCOL_VERSIONS];
+const SERVER_INFO = { name: 'lambda-notes', version: '1.2.8' };
+const SERVER_INFO_META_KEY = 'io.modelcontextprotocol/serverInfo';
+const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion';
 
 const blockSchema = {
   type: 'object',
@@ -170,7 +173,7 @@ export const MCP_TOOLS = [
     description: 'Delete a category only when no active or deleted notes use it.',
     inputSchema: {
       type: 'object',
-      properties: { id: { type: 'integer' } },
+      properties: { id: { type: 'integer' }, name: { type: 'string', maxLength: 80 } },
       required: ['id'],
       additionalProperties: false,
     },
@@ -249,28 +252,46 @@ const toolHandlers = {
   }),
 };
 
-function result(id, value) {
-  return { jsonrpc: '2.0', id, result: value };
+function isModernMessage(message) {
+  if (message.method === 'server/discover') return true;
+  return message.params?._meta?.[PROTOCOL_VERSION_META_KEY] === MCP_PROTOCOL_VERSION;
+}
+
+function withModernMeta(value, modern) {
+  if (!modern || !value || typeof value !== 'object' || Array.isArray(value)) return value;
+  return {
+    ...value,
+    _meta: {
+      ...(value._meta || {}),
+      [SERVER_INFO_META_KEY]: SERVER_INFO,
+    },
+  };
+}
+
+function result(id, value, modern = false) {
+  return { jsonrpc: '2.0', id, result: withModernMeta(value, modern) };
 }
 
 function protocolError(id, code, message) {
   return { jsonrpc: '2.0', id: id ?? null, error: { code, message } };
 }
 
-function toolResult(value, isError = false) {
+function toolResult(value, isError = false, modern = false) {
   const structuredContent = isError ? { error: String(value) } : { result: value };
-  return {
-    resultType: 'complete',
+  const payload = {
     content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
     structuredContent,
     isError,
   };
+  return modern ? { resultType: 'complete', ...payload } : payload;
 }
 
 export function processMcpMessage(database, message) {
   if (!message || typeof message !== 'object' || Array.isArray(message) || message.jsonrpc !== '2.0' || typeof message.method !== 'string') {
     return { status: 400, body: protocolError(message?.id, -32600, 'Invalid Request') };
   }
+
+  const modern = isModernMessage(message);
 
   if (message.method === 'notifications/initialized') return { status: 202, body: null };
 
@@ -281,9 +302,8 @@ export function processMcpMessage(database, message) {
         resultType: 'complete',
         supportedVersions: SUPPORTED_PROTOCOL_VERSIONS,
         capabilities: { tools: {} },
-        serverInfo: { name: 'lambda-notes', version: '1.2.7' },
         instructions: 'Use note and block tools to search, create, update, categorise, soft-delete, restore, and address individual Lambda blocks by code.',
-      }),
+      }, true),
     };
   }
 
@@ -295,24 +315,19 @@ export function processMcpMessage(database, message) {
       body: result(message.id, {
         protocolVersion,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: 'lambda-notes', version: '1.2.7' },
+        serverInfo: SERVER_INFO,
         instructions: 'Use note and block tools to search, create, update, categorise, soft-delete, restore, and address individual Lambda blocks by code.',
       }),
     };
   }
 
-  if (message.method === 'ping') return { status: 200, body: result(message.id, {}) };
+  if (message.method === 'ping') return { status: 200, body: result(message.id, {}, modern) };
 
   if (message.method === 'tools/list') {
-    return {
-      status: 200,
-      body: result(message.id, {
-        resultType: 'complete',
-        tools: MCP_TOOLS,
-        ttlMs: 300_000,
-        cacheScope: 'public',
-      }),
-    };
+    const payload = modern
+      ? { resultType: 'complete', tools: MCP_TOOLS, ttlMs: 300_000, cacheScope: 'public' }
+      : { tools: MCP_TOOLS };
+    return { status: 200, body: result(message.id, payload, modern) };
   }
 
   if (message.method === 'tools/call') {
@@ -324,9 +339,9 @@ export function processMcpMessage(database, message) {
       return { status: 400, body: protocolError(message.id, -32602, 'Tool arguments must be an object.') };
     }
     try {
-      return { status: 200, body: result(message.id, toolResult(handler(database, args || {}))) };
+      return { status: 200, body: result(message.id, toolResult(handler(database, args || {}), false, modern), modern) };
     } catch (error) {
-      return { status: 200, body: result(message.id, toolResult(error.message || 'Tool call failed.', true)) };
+      return { status: 200, body: result(message.id, toolResult(error.message || 'Tool call failed.', true, modern), modern) };
     }
   }
 
