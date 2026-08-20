@@ -45,7 +45,11 @@ const subtaskSchema = {
 
 const todoFields = {
   title: { type: 'string', maxLength: 300, description: 'To-do title.' },
-  due_date: { type: ['string', 'null'], pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Optional due date in YYYY-MM-DD format.' },
+  due_date: {
+    type: 'string',
+    pattern: '^(?:\\d{4}-\\d{2}-\\d{2})?$',
+    description: 'Optional due date in YYYY-MM-DD format. Use an empty string to clear an existing due date.',
+  },
   subtasks: { type: 'array', maxItems: 100, items: subtaskSchema },
   completed: { type: 'boolean', description: 'Whether the to-do is completed.' },
 };
@@ -443,12 +447,12 @@ function toolResult(value, isError = false, modern = false) {
   return modern ? { resultType: 'complete', ...payload } : payload;
 }
 
-export function processMcpMessage(database, message, todos = null) {
+export function processMcpMessage(database, message, todos = null, protocolVersion = '') {
   if (!message || typeof message !== 'object' || Array.isArray(message) || message.jsonrpc !== '2.0' || typeof message.method !== 'string') {
     return { status: 400, body: protocolError(message?.id, -32600, 'Invalid Request') };
   }
 
-  const modern = isModernMessage(message);
+  const modern = protocolVersion === MCP_PROTOCOL_VERSION || isModernMessage(message);
 
   if (message.method === 'notifications/initialized') return { status: 202, body: null };
 
@@ -466,11 +470,11 @@ export function processMcpMessage(database, message, todos = null) {
 
   if (message.method === 'initialize') {
     const requested = message.params?.protocolVersion;
-    const protocolVersion = LEGACY_PROTOCOL_VERSIONS.includes(requested) ? requested : '2025-11-25';
+    const selectedProtocol = LEGACY_PROTOCOL_VERSIONS.includes(requested) ? requested : '2025-11-25';
     return {
       status: 200,
       body: result(message.id, {
-        protocolVersion,
+        protocolVersion: selectedProtocol,
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
         instructions: 'Use Lambda tools to manage notes, directly address note blocks, and track active or completed to-dos with due dates and subtasks.',
