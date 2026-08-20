@@ -4,7 +4,7 @@ import { toNodeHandler } from '@modelcontextprotocol/node';
 import { validateBlockCode, validateCategoryName, validateNote, validateTodo } from './validation.js';
 
 const SERVER_NAME = 'lambda-notes';
-const SERVER_VERSION = '1.3.3';
+const SERVER_VERSION = '1.3.4';
 
 const blockSchema = {
   type: 'object',
@@ -55,7 +55,7 @@ export const MCP_TOOLS = [
   {
     name: 'list_todos',
     title: 'List to-dos',
-    description: 'List active to-dos by default. Completed to-dos are excluded unless explicitly requested.',
+    description: 'List active to-dos by default in priority order. Completed to-dos are excluded unless explicitly requested.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -70,7 +70,7 @@ export const MCP_TOOLS = [
   {
     name: 'get_todo',
     title: 'Get a to-do',
-    description: 'Get one to-do including due date, completion state, and subtasks.',
+    description: 'Get one to-do including priority, due date, completion state, and subtasks.',
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'string', description: 'To-do UUID.' } },
@@ -82,7 +82,7 @@ export const MCP_TOOLS = [
   {
     name: 'create_todo',
     title: 'Create a to-do',
-    description: 'Create a new active to-do with an optional due date and subtasks.',
+    description: 'Create a new active to-do with an optional due date and subtasks. New active items are appended to the priority list.',
     inputSchema: {
       type: 'object',
       properties: todoFields,
@@ -104,9 +104,27 @@ export const MCP_TOOLS = [
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   },
   {
+    name: 'reorder_todos',
+    title: 'Reorder active to-dos',
+    description: 'Set the priority order of every active to-do. Supply all active to-do IDs from highest to lowest priority.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'All active to-do UUIDs in the desired priority order.',
+        },
+      },
+      required: ['ids'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  },
+  {
     name: 'complete_todo',
     title: 'Complete or reopen a to-do',
-    description: 'Mark a to-do complete. Set completed to false to reopen it.',
+    description: 'Mark a to-do complete. Set completed to false to reopen it; reopened items are appended to the active priority list.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -355,6 +373,7 @@ function toolHandlers(database, todos) {
       completed: Boolean(args.completed),
     })),
     update_todo: (args) => requireResult(todos.updateTodo(String(args.id || ''), mergeTodo(todos, args)), 'To-do not found.'),
+    reorder_todos: (args) => todos.reorderActive(args.ids),
     complete_todo: (args) => {
       const current = requireResult(todos.getTodo(String(args.id || '')), 'To-do not found.');
       return todos.updateTodo(current.id, validateTodo({
