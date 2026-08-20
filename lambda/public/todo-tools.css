@@ -313,6 +313,15 @@
   color: var(--danger);
 }
 
+#todos-nav.active ~ .nav-item.active {
+  color: #b8bdc9;
+  background: transparent;
+}
+
+#todos-nav.active ~ .nav-item.active .count {
+  color: #858c9b;
+}
+
 @media (max-width: 900px) {
   .todos-view {
     width: 100%;
