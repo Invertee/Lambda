@@ -8,7 +8,8 @@ import { loadConfig } from './config.js';
 import { SnippetDatabase } from './database.js';
 import { EncryptionVault } from './encryption.js';
 import { MCP_PROTOCOL_VERSION, processMcpMessage } from './mcp.js';
-import { ValidationError, validateBackup, validateBlockCode, validateCategoryName, validateNote } from './validation.js';
+import { TodoStore } from './todo-store.js';
+import { ValidationError, validateBackup, validateBlockCode, validateCategoryName, validateNote, validateTodo } from './validation.js';
 
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MAX_BODY_BYTES = 12 * 1024 * 1024;
@@ -99,10 +100,10 @@ function downloadFilename(value) {
 
 function withBlockTools(contents) {
   const html = contents.toString('utf8');
-  if (html.includes('block-tools.js')) return contents;
+  if (html.includes('todo-tools.js')) return contents;
   return Buffer.from(html
-    .replace('</head>', '  <link rel="stylesheet" href="block-tools.css?v=1.2.0">\n</head>')
-    .replace('</body>', '  <script type="module" src="block-tools.js?v=1.2.0"></script>\n</body>'));
+    .replace('</head>', '  <link rel="stylesheet" href="block-tools.css?v=1.3.0">\n  <link rel="stylesheet" href="todo-tools.css?v=1.3.0">\n</head>')
+    .replace('</body>', '  <script type="module" src="block-tools.js?v=1.3.0"></script>\n  <script type="module" src="todo-tools.js?v=1.3.0"></script>\n</body>'));
 }
 
 function serveFile(response, filename) {
@@ -131,12 +132,23 @@ function staticFilename(pathname) {
     : null;
 }
 
+function normalizedTodoInput(body, current = null) {
+  const has = (key) => Object.hasOwn(body, key);
+  return validateTodo({
+    title: has('title') ? body.title : current?.title,
+    dueDate: has('dueDate') ? body.dueDate : (has('due_date') ? body.due_date : current?.dueDate),
+    subtasks: has('subtasks') ? body.subtasks : (current?.subtasks || []),
+    completed: has('completed') ? body.completed : Boolean(current?.completed),
+  });
+}
+
 export function createApp(customConfig = {}) {
   const config = { ...loadConfig(), ...customConfig };
   const encryptionKeyPath = customConfig.encryptionKeyPath
     || (customConfig.database || config.dbPath === ':memory:' ? '' : `${config.dbPath}.encryption.json`);
   const encryption = customConfig.encryption || new EncryptionVault(config.password, encryptionKeyPath);
   const database = customConfig.database || new SnippetDatabase(config.dbPath, encryption);
+  const todos = customConfig.todos || new TodoStore(database.db, encryption);
   const auth = new AuthManager(config.password, config.sessionDays, database.sessions);
 
   const server = http.createServer(async (request, response) => {
@@ -173,7 +185,7 @@ export function createApp(customConfig = {}) {
             return json(response, 400, { error: 'The Mcp-Name header must match the requested tool.' });
           }
         }
-        const processed = processMcpMessage(database, message);
+        const processed = processMcpMessage(database, message, todos);
         return processed.body === null
           ? empty(response, processed.status)
           : json(response, processed.status, processed.body);
@@ -222,20 +234,23 @@ export function createApp(customConfig = {}) {
           notes: database.listNotes(),
           trash: database.listNotes({ deleted: true }),
           categories: database.listCategories(),
+          todos: todos.listTodos(),
           cachedAt: new Date().toISOString(),
         });
       }
 
       if (pathname === '/api/backup' && request.method === 'GET') {
         const date = new Date().toISOString().slice(0, 10);
-        return json(response, 200, database.exportBackup(), {
+        return json(response, 200, { ...database.exportBackup(), todos: todos.exportBackup() }, {
           'Content-Disposition': downloadFilename(`lambda-backup-${date}.json`),
         });
       }
 
       if (pathname === '/api/backup' && request.method === 'PUT') {
         const backup = validateBackup(await readJsonObject(request));
-        return json(response, 200, database.restoreBackup(backup));
+        const restored = database.restoreBackup(backup);
+        const restoredTodos = todos.restoreBackup(backup.todos);
+        return json(response, 200, { ...restored, todos: restoredTodos });
       }
 
       if (pathname === '/api/attachments' && request.method === 'POST') {
@@ -297,6 +312,43 @@ export function createApp(customConfig = {}) {
       if (blockMatch && ['PATCH', 'PUT'].includes(request.method)) {
         const block = database.updateBlock(validateBlockCode(blockMatch[1]), await readBlockUpdate(request));
         return block ? json(response, 200, block) : json(response, 404, { error: 'Active block not found.' });
+      }
+
+      if (pathname === '/api/todos' && request.method === 'GET') {
+        return json(response, 200, todos.listTodos({
+          includeCompleted: url.searchParams.get('include_completed') === '1',
+          completedOnly: url.searchParams.get('completed') === '1',
+          search: url.searchParams.get('q') || '',
+        }));
+      }
+
+      if (pathname === '/api/todos' && request.method === 'POST') {
+        const body = await readJsonObject(request);
+        return json(response, 201, todos.createTodo(normalizedTodoInput(body)));
+      }
+
+      if (pathname === '/api/todos/completed' && request.method === 'DELETE') {
+        return json(response, 200, { deleted: todos.clearCompleted() });
+      }
+
+      const todoMatch = pathname.match(/^\/api\/todos\/([a-f0-9-]+)$/i);
+      if (todoMatch && request.method === 'GET') {
+        const todo = todos.getTodo(todoMatch[1]);
+        return todo ? json(response, 200, todo) : json(response, 404, { error: 'To-do not found.' });
+      }
+      if (todoMatch && request.method === 'PUT') {
+        const body = await readJsonObject(request);
+        const todo = todos.updateTodo(todoMatch[1], normalizedTodoInput(body));
+        return todo ? json(response, 200, todo) : json(response, 404, { error: 'To-do not found.' });
+      }
+      if (todoMatch && request.method === 'PATCH') {
+        const current = todos.getTodo(todoMatch[1]);
+        if (!current) return json(response, 404, { error: 'To-do not found.' });
+        const body = await readJsonObject(request);
+        return json(response, 200, todos.updateTodo(todoMatch[1], normalizedTodoInput(body, current)));
+      }
+      if (todoMatch && request.method === 'DELETE') {
+        return todos.deleteTodo(todoMatch[1]) ? empty(response) : json(response, 404, { error: 'To-do not found.' });
       }
 
       if (pathname === '/api/notes' && request.method === 'GET') {
@@ -390,6 +442,7 @@ export function createApp(customConfig = {}) {
   return {
     server,
     database,
+    todos,
     listen: () => new Promise((resolve) => server.listen(config.port, config.host, resolve)),
     close: () => new Promise((resolve, reject) => server.close((error) => {
       if (customConfig.database) return error ? reject(error) : resolve();
