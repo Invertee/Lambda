@@ -1,4 +1,4 @@
-$script:LambdaHelperVersion = '1.2.7'
+$script:LambdaHelperVersion = '1.3.0'
 $script:LambdaHelperPath = $PSCommandPath
 
 if (-not (Get-Variable -Name LambdaConnection -Scope Global -ErrorAction SilentlyContinue)) {
@@ -126,6 +126,26 @@ function Resolve-LambdaConnection {
         Uri    = $resolvedUri.TrimEnd('/')
         ApiKey = $resolvedApiKey
     }
+}
+
+function ConvertTo-LambdaDueDate {
+    param(
+        [AllowNull()]
+        [object] $Value
+    )
+
+    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string] $Value)) {
+        return $null
+    }
+    if ($Value -is [datetime]) {
+        return $Value.ToString('yyyy-MM-dd')
+    }
+
+    $parsed = [datetime]::MinValue
+    if (-not [datetime]::TryParse([string] $Value, [ref] $parsed)) {
+        throw 'DueDate must be a valid date.'
+    }
+    return $parsed.ToString('yyyy-MM-dd')
 }
 
 function ConvertTo-LambdaCellValue {
@@ -470,6 +490,245 @@ function Set-LambdaBlock {
     }
 }
 
+function New-LambdaTodo {
+    <#
+    .SYNOPSIS
+    Creates a Lambda to-do.
+
+    .EXAMPLE
+    New-Todo -Name 'Review conditional access' -DueDate tomorrow -Subtask 'Export policies','Review exclusions'
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [Alias('Name')]
+        [ValidateNotNullOrEmpty()]
+        [string] $Title,
+
+        [AllowNull()]
+        [object] $DueDate,
+
+        [string[]] $Subtask = @(),
+
+        [string] $Uri,
+
+        [string] $ApiKey
+    )
+
+    $connection = Resolve-LambdaConnection -Uri $Uri -ApiKey $ApiKey
+    $subtasks = @($Subtask | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object {
+        [ordered]@{
+            title     = $_.Trim()
+            completed = $false
+        }
+    })
+    $body = [ordered]@{
+        title    = $Title
+        dueDate  = ConvertTo-LambdaDueDate -Value $DueDate
+        subtasks = $subtasks
+    } | ConvertTo-Json -Depth 8
+
+    Invoke-RestMethod `
+        -Uri ('{0}/api/todos' -f $connection.Uri) `
+        -Method Post `
+        -Headers @{ Authorization = "Bearer $($connection.ApiKey)" } `
+        -ContentType 'application/json; charset=utf-8' `
+        -Body $body
+}
+
+function Get-LambdaTodo {
+    <#
+    .SYNOPSIS
+    Gets active Lambda to-dos by default.
+
+    .EXAMPLE
+    Get-Todo
+
+    .EXAMPLE
+    Get-Todo -IncludeCompleted
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [string] $Id,
+
+        [switch] $IncludeCompleted,
+
+        [switch] $CompletedOnly,
+
+        [string] $Query,
+
+        [string] $Uri,
+
+        [string] $ApiKey
+    )
+
+    $connection = Resolve-LambdaConnection -Uri $Uri -ApiKey $ApiKey
+    if (-not [string]::IsNullOrWhiteSpace($Id)) {
+        return Invoke-RestMethod `
+            -Uri ('{0}/api/todos/{1}' -f $connection.Uri, $Id) `
+            -Method Get `
+            -Headers @{ Authorization = "Bearer $($connection.ApiKey)" }
+    }
+
+    $parameters = [System.Collections.Generic.List[string]]::new()
+    if ($IncludeCompleted) {
+        $parameters.Add('include_completed=1')
+    }
+    if ($CompletedOnly) {
+        $parameters.Add('completed=1')
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Query)) {
+        $parameters.Add(('q={0}' -f [uri]::EscapeDataString($Query)))
+    }
+    $suffix = if ($parameters.Count) { '?' + ($parameters -join '&') } else { '' }
+
+    Invoke-RestMethod `
+        -Uri ('{0}/api/todos{1}' -f $connection.Uri, $suffix) `
+        -Method Get `
+        -Headers @{ Authorization = "Bearer $($connection.ApiKey)" }
+}
+
+function Set-LambdaTodo {
+    <#
+    .SYNOPSIS
+    Updates a Lambda to-do.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string] $Id,
+
+        [string] $Title,
+
+        [AllowNull()]
+        [object] $DueDate,
+
+        [switch] $ClearDueDate,
+
+        [string[]] $Subtask,
+
+        [switch] $Complete,
+
+        [switch] $Reopen,
+
+        [string] $Uri,
+
+        [string] $ApiKey
+    )
+
+    if ($Complete -and $Reopen) {
+        throw 'Use either Complete or Reopen, not both.'
+    }
+
+    $body = [ordered]@{}
+    if ($PSBoundParameters.ContainsKey('Title')) {
+        $body.title = $Title
+    }
+    if ($ClearDueDate) {
+        $body.dueDate = $null
+    }
+    elseif ($PSBoundParameters.ContainsKey('DueDate')) {
+        $body.dueDate = ConvertTo-LambdaDueDate -Value $DueDate
+    }
+    if ($PSBoundParameters.ContainsKey('Subtask')) {
+        $body.subtasks = @($Subtask | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object {
+            [ordered]@{
+                title     = $_.Trim()
+                completed = $false
+            }
+        })
+    }
+    if ($Complete) {
+        $body.completed = $true
+    }
+    if ($Reopen) {
+        $body.completed = $false
+    }
+    if (-not $body.Count) {
+        throw 'Supply at least one change.'
+    }
+
+    $connection = Resolve-LambdaConnection -Uri $Uri -ApiKey $ApiKey
+    Invoke-RestMethod `
+        -Uri ('{0}/api/todos/{1}' -f $connection.Uri, $Id) `
+        -Method Patch `
+        -Headers @{ Authorization = "Bearer $($connection.ApiKey)" } `
+        -ContentType 'application/json; charset=utf-8' `
+        -Body ($body | ConvertTo-Json -Depth 8)
+}
+
+function Complete-LambdaTodo {
+    <#
+    .SYNOPSIS
+    Completes a Lambda to-do, or reopens it with Reopen.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        [string] $Id,
+
+        [switch] $Reopen,
+
+        [string] $Uri,
+
+        [string] $ApiKey
+    )
+
+    process {
+        Set-LambdaTodo -Id $Id -Complete:(-not $Reopen) -Reopen:$Reopen -Uri $Uri -ApiKey $ApiKey
+    }
+}
+
+function Remove-LambdaTodo {
+    <#
+    .SYNOPSIS
+    Permanently removes a Lambda to-do.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        [string] $Id,
+
+        [string] $Uri,
+
+        [string] $ApiKey
+    )
+
+    process {
+        $connection = Resolve-LambdaConnection -Uri $Uri -ApiKey $ApiKey
+        Invoke-RestMethod `
+            -Uri ('{0}/api/todos/{1}' -f $connection.Uri, $Id) `
+            -Method Delete `
+            -Headers @{ Authorization = "Bearer $($connection.ApiKey)" }
+    }
+}
+
+function Clear-LambdaCompletedTodo {
+    <#
+    .SYNOPSIS
+    Permanently clears every completed Lambda to-do.
+    #>
+    [CmdletBinding()]
+    param(
+        [string] $Uri,
+
+        [string] $ApiKey
+    )
+
+    $connection = Resolve-LambdaConnection -Uri $Uri -ApiKey $ApiKey
+    Invoke-RestMethod `
+        -Uri ('{0}/api/todos/completed' -f $connection.Uri) `
+        -Method Delete `
+        -Headers @{ Authorization = "Bearer $($connection.ApiKey)" }
+}
+
 Set-Alias -Name New-Snip -Value New-LambdaNote -Scope Global -Force
 Set-Alias -Name Get-Snip -Value Get-LambdaBlock -Scope Global -Force
 Set-Alias -Name Set-Snip -Value Set-LambdaBlock -Scope Global -Force
+Set-Alias -Name New-Todo -Value New-LambdaTodo -Scope Global -Force
+Set-Alias -Name Get-Todo -Value Get-LambdaTodo -Scope Global -Force
+Set-Alias -Name Set-Todo -Value Set-LambdaTodo -Scope Global -Force
+Set-Alias -Name Complete-Todo -Value Complete-LambdaTodo -Scope Global -Force
+Set-Alias -Name Remove-Todo -Value Remove-LambdaTodo -Scope Global -Force
+Set-Alias -Name Clear-CompletedTodo -Value Clear-LambdaCompletedTodo -Scope Global -Force
