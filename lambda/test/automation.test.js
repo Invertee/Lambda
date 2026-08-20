@@ -73,7 +73,7 @@ test('static API key supports create, partial update, filtering, and category re
   assert.equal(noteAfterRename.category, 'Automation');
 });
 
-test('MCP endpoint exposes and executes note and category tools', async (context) => {
+test('MCP endpoint exposes and executes note, todo, and category tools', async (context) => {
   const { base } = await startApp(context);
   const callMcp = async (method, params = {}) => {
     const headers = {
@@ -98,9 +98,24 @@ test('MCP endpoint exposes and executes note and category tools', async (context
   assert.equal((await discovered.json()).result.supportedVersions[0], '2026-07-28');
 
   const listed = await callMcp('tools/list');
-  const tools = (await listed.json()).result.tools;
-  assert.ok(tools.some((tool) => tool.name === 'create_note'));
-  assert.ok(tools.some((tool) => tool.name === 'rename_category'));
+  const listedPayload = (await listed.json()).result;
+  assert.equal(listedPayload.resultType, 'complete');
+  assert.equal(listedPayload._meta['io.modelcontextprotocol/serverInfo'].version, '1.3.0');
+  assert.ok(listedPayload.tools.some((tool) => tool.name === 'create_note'));
+  assert.ok(listedPayload.tools.some((tool) => tool.name === 'create_todo'));
+  assert.ok(listedPayload.tools.some((tool) => tool.name === 'rename_category'));
+
+  const todoResponse = await callMcp('tools/call', {
+    name: 'create_todo',
+    arguments: {
+      title: 'MCP task',
+      due_date: '2026-08-22',
+      subtasks: [{ title: 'First step' }],
+    },
+  });
+  const todoPayload = await todoResponse.json();
+  assert.equal(todoPayload.result.isError, false);
+  assert.equal(todoPayload.result.structuredContent.result.title, 'MCP task');
 
   const createdResponse = await callMcp('tools/call', {
     name: 'create_note',
