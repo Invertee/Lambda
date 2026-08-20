@@ -1,5 +1,8 @@
-$script:LambdaHelperVersion = '1.3.0'
+$script:LambdaHelperVersion = '1.3.4'
 $script:LambdaHelperPath = $PSCommandPath
+$script:LambdaTodoCache = @()
+
+Update-TypeData -TypeName 'Lambda.TodoView' -DefaultDisplayPropertySet 'No','Due','Task','Steps' -Force
 
 if (-not (Get-Variable -Name LambdaConnection -Scope Global -ErrorAction SilentlyContinue)) {
     $Global:LambdaConnection = [ordered]@{
@@ -24,6 +27,7 @@ function Set-LambdaConnection {
         Uri    = $Uri.TrimEnd('/')
         ApiKey = $ApiKey
     }
+    $script:LambdaTodoCache = @()
 }
 
 function Install-LambdaProfile {
@@ -68,6 +72,7 @@ function Install-LambdaProfile {
 $startMarker
 . '$escapedHelper'
 Set-LambdaConnection -Uri '$escapedUri' -ApiKey '$escapedApiKey'
+Show-LambdaTodoSummary -TimeoutMs 200
 $endMarker
 "@
 
@@ -91,6 +96,7 @@ $endMarker
 
     Set-Content -LiteralPath $ProfilePath -Value $updated -Encoding utf8
     Set-LambdaConnection -Uri $Uri -ApiKey $ApiKey
+    Show-LambdaTodoSummary -TimeoutMs 200
 }
 
 function Resolve-LambdaConnection {
@@ -125,6 +131,58 @@ function Resolve-LambdaConnection {
     [pscustomobject]@{
         Uri    = $resolvedUri.TrimEnd('/')
         ApiKey = $resolvedApiKey
+    }
+}
+
+function Show-LambdaTodoSummary {
+    <#
+    .SYNOPSIS
+    Shows the active Lambda to-do count without delaying profile startup if Lambda is unavailable.
+    #>
+    [CmdletBinding()]
+    param(
+        [ValidateRange(50, 1000)]
+        [int] $TimeoutMs = 200,
+
+        [switch] $PassThru,
+
+        [string] $Uri,
+
+        [string] $ApiKey
+    )
+
+    $client = $null
+    $request = $null
+    try {
+        $connection = Resolve-LambdaConnection -Uri $Uri -ApiKey $ApiKey
+        $client = [System.Net.Http.HttpClient]::new()
+        $client.Timeout = [TimeSpan]::FromMilliseconds($TimeoutMs)
+        $request = [System.Net.Http.HttpRequestMessage]::new(
+            [System.Net.Http.HttpMethod]::Get,
+            ('{0}/api/todos/count' -f $connection.Uri)
+        )
+        $request.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $connection.ApiKey)
+        $response = $client.SendAsync($request).GetAwaiter().GetResult()
+        if (-not $response.IsSuccessStatusCode) {
+            return
+        }
+        $payload = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json
+        $count = [int] $payload.active
+        $suffix = if ($count -eq 1) { '' } else { 's' }
+        Write-Host ('Lambda {0} active to-do{1}' -f $count, $suffix)
+        if ($PassThru) {
+            return $count
+        }
+    }
+    catch {
+    }
+    finally {
+        if ($null -ne $request) {
+            $request.Dispose()
+        }
+        if ($null -ne $client) {
+            $client.Dispose()
+        }
     }
 }
 
@@ -260,10 +318,6 @@ function New-LambdaNote {
 
     .EXAMPLE
     Get-NetAdapter | New-Snip -Name 'net adaptors'
-
-    .EXAMPLE
-    New-Snip -Name 'Restart service' -Category 'PowerShell' -BlockType code `
-        -Language powershell -Content 'Restart-Service Spooler'
     #>
     [CmdletBinding()]
     param(
@@ -362,16 +416,6 @@ function New-LambdaNote {
 }
 
 function Get-LambdaBlock {
-    <#
-    .SYNOPSIS
-    Retrieves a Lambda block using its five-character code.
-
-    .EXAMPLE
-    Get-Snip A1B2C
-
-    .EXAMPLE
-    Get-Snip A1B2C -AsTable
-    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, Position = 0)]
@@ -406,16 +450,6 @@ function Get-LambdaBlock {
 }
 
 function Set-LambdaBlock {
-    <#
-    .SYNOPSIS
-    Replaces the content of a Lambda block using its five-character code.
-
-    .EXAMPLE
-    Get-NetAdapter | Set-Snip A1B2C
-
-    .EXAMPLE
-    Get-Content .\output.txt | Set-Snip A1B2C
-    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, Position = 0)]
@@ -498,14 +532,74 @@ function Set-LambdaBlock {
     }
 }
 
-function New-LambdaTodo {
-    <#
-    .SYNOPSIS
-    Creates a Lambda to-do.
+function ConvertTo-LambdaTodoDueLabel {
+    param(
+        [AllowNull()]
+        [string] $DueDate,
 
-    .EXAMPLE
-    New-Todo -Name 'Review conditional access' -DueDate tomorrow -Subtask 'Export policies','Review exclusions'
-    #>
+        [bool] $Completed = $false
+    )
+
+    if ($Completed) {
+        return 'Done'
+    }
+    if ([string]::IsNullOrWhiteSpace($DueDate)) {
+        return '-'
+    }
+
+    $today = (Get-Date).Date
+    $due = [datetime]::ParseExact($DueDate, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+    if ($due -eq $today) {
+        return 'Today'
+    }
+    if ($due -eq $today.AddDays(1)) {
+        return 'Tomorrow'
+    }
+    if ($due -lt $today) {
+        return 'Overdue'
+    }
+    return $due.ToString('dd MMM')
+}
+
+function ConvertTo-LambdaTodoView {
+    param(
+        [object[]] $Todos
+    )
+
+    $number = 0
+    foreach ($todo in @($Todos)) {
+        $todoNumber = ''
+        if (-not $todo.completed) {
+            $number++
+            $todoNumber = $number
+        }
+        $steps = ''
+        $subtasks = @($todo.subtasks)
+        if ($subtasks.Count) {
+            $done = @($subtasks | Where-Object { $_.completed }).Count
+            $steps = '{0}/{1}' -f $done, $subtasks.Count
+        }
+
+        [pscustomobject]@{
+            PSTypeName  = 'Lambda.TodoView'
+            No          = $todoNumber
+            Due         = ConvertTo-LambdaTodoDueLabel -DueDate $todo.dueDate -Completed ([bool] $todo.completed)
+            Task        = $todo.title
+            Steps       = $steps
+            Id          = $todo.id
+            Priority    = $todo.priority
+            Title       = $todo.title
+            DueDate     = $todo.dueDate
+            Subtasks    = $todo.subtasks
+            Completed   = $todo.completed
+            CompletedAt = $todo.completedAt
+            CreatedAt   = $todo.createdAt
+            UpdatedAt   = $todo.updatedAt
+        }
+    }
+}
+
+function New-LambdaTodo {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, Position = 0)]
@@ -536,24 +630,29 @@ function New-LambdaTodo {
         subtasks = $subtasks
     } | ConvertTo-Json -Depth 8
 
-    Invoke-RestMethod `
+    $created = Invoke-RestMethod `
         -Uri ('{0}/api/todos' -f $connection.Uri) `
         -Method Post `
         -Headers @{ Authorization = "Bearer $($connection.ApiKey)" } `
         -ContentType 'application/json; charset=utf-8' `
         -Body $body
+
+    if ($script:LambdaTodoCache.Count) {
+        $script:LambdaTodoCache = @($script:LambdaTodoCache) + @($created)
+    }
+    return $created
 }
 
 function Get-LambdaTodo {
     <#
     .SYNOPSIS
-    Gets active Lambda to-dos by default.
+    Gets active Lambda to-dos in a compact numbered view by default.
 
     .EXAMPLE
-    Get-Todo
+    todo
 
     .EXAMPLE
-    Get-Todo -IncludeCompleted
+    Get-Todo -Raw
     #>
     [CmdletBinding()]
     param(
@@ -565,6 +664,8 @@ function Get-LambdaTodo {
         [switch] $CompletedOnly,
 
         [string] $Query,
+
+        [switch] $Raw,
 
         [string] $Uri,
 
@@ -591,21 +692,52 @@ function Get-LambdaTodo {
     }
     $suffix = if ($parameters.Count) { '?' + ($parameters -join '&') } else { '' }
 
-    Invoke-RestMethod `
+    $result = @(Invoke-RestMethod `
         -Uri ('{0}/api/todos{1}' -f $connection.Uri, $suffix) `
         -Method Get `
-        -Headers @{ Authorization = "Bearer $($connection.ApiKey)" }
+        -Headers @{ Authorization = "Bearer $($connection.ApiKey)" })
+
+    $script:LambdaTodoCache = @($result | Where-Object { -not $_.completed })
+    if ($Raw) {
+        return $result
+    }
+    return ConvertTo-LambdaTodoView -Todos $result
+}
+
+function Resolve-LambdaTodoId {
+    param(
+        [Parameter(Mandatory)]
+        [object] $Value,
+
+        [string] $Uri,
+
+        [string] $ApiKey
+    )
+
+    if ($null -ne $Value.PSObject.Properties['Id'] -and -not [string]::IsNullOrWhiteSpace([string] $Value.Id)) {
+        return [string] $Value.Id
+    }
+
+    $text = ([string] $Value).Trim()
+    $number = 0
+    if ([int]::TryParse($text, [ref] $number)) {
+        if (-not $script:LambdaTodoCache.Count) {
+            $null = @(Get-LambdaTodo -Raw -Uri $Uri -ApiKey $ApiKey)
+        }
+        if ($number -lt 1 -or $number -gt $script:LambdaTodoCache.Count) {
+            throw ('To-do number {0} is not in the current active list. Run todo to refresh the numbering.' -f $number)
+        }
+        return [string] $script:LambdaTodoCache[$number - 1].id
+    }
+
+    return $text
 }
 
 function Set-LambdaTodo {
-    <#
-    .SYNOPSIS
-    Updates a Lambda to-do.
-    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, Position = 0)]
-        [string] $Id,
+        [object] $Id,
 
         [string] $Title,
 
@@ -629,6 +761,7 @@ function Set-LambdaTodo {
         throw 'Use either Complete or Reopen, not both.'
     }
 
+    $resolvedId = Resolve-LambdaTodoId -Value $Id -Uri $Uri -ApiKey $ApiKey
     $body = [ordered]@{}
     if ($PSBoundParameters.ContainsKey('Title')) {
         $body.title = $Title
@@ -658,45 +791,111 @@ function Set-LambdaTodo {
     }
 
     $connection = Resolve-LambdaConnection -Uri $Uri -ApiKey $ApiKey
-    Invoke-RestMethod `
-        -Uri ('{0}/api/todos/{1}' -f $connection.Uri, $Id) `
+    $updated = Invoke-RestMethod `
+        -Uri ('{0}/api/todos/{1}' -f $connection.Uri, $resolvedId) `
         -Method Patch `
         -Headers @{ Authorization = "Bearer $($connection.ApiKey)" } `
         -ContentType 'application/json; charset=utf-8' `
         -Body ($body | ConvertTo-Json -Depth 8)
+
+    if ($updated.completed) {
+        $script:LambdaTodoCache = @($script:LambdaTodoCache | Where-Object { $_.id -ne $updated.id })
+    }
+    elseif ($script:LambdaTodoCache.Count) {
+        $existing = @($script:LambdaTodoCache | Where-Object { $_.id -ne $updated.id })
+        $script:LambdaTodoCache = $existing + @($updated)
+    }
+    return $updated
 }
 
 function Complete-LambdaTodo {
     <#
     .SYNOPSIS
-    Completes a Lambda to-do, or reopens it with Reopen.
+    Completes a Lambda to-do by UUID or by the number shown by todo.
+
+    .EXAMPLE
+    complete 1
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory, Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
-        [string] $Id,
+        [Parameter(Mandatory, Position = 0, ValueFromPipeline)]
+        [object] $Id,
 
         [switch] $Reopen,
 
+        [switch] $PassThru,
+
         [string] $Uri,
 
         [string] $ApiKey
     )
 
     process {
-        Set-LambdaTodo -Id $Id -Complete:(-not $Reopen) -Reopen:$Reopen -Uri $Uri -ApiKey $ApiKey
+        $updated = Set-LambdaTodo -Id $Id -Complete:(-not $Reopen) -Reopen:$Reopen -Uri $Uri -ApiKey $ApiKey
+        $verb = if ($Reopen) { 'Reopened' } else { 'Completed' }
+        Write-Host ('{0} {1}' -f $verb, $updated.title)
+        if ($PassThru) {
+            return $updated
+        }
     }
 }
 
-function Remove-LambdaTodo {
+function Move-LambdaTodo {
     <#
     .SYNOPSIS
-    Permanently removes a Lambda to-do.
+    Moves an active to-do to a new priority position.
+
+    .EXAMPLE
+    Move-Todo 3 -Position 1
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory, Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
-        [string] $Id,
+        [Parameter(Mandatory, Position = 0)]
+        [object] $Id,
+
+        [Parameter(Mandatory, Position = 1)]
+        [ValidateRange(1, 100000)]
+        [int] $Position,
+
+        [string] $Uri,
+
+        [string] $ApiKey
+    )
+
+    $resolvedId = Resolve-LambdaTodoId -Value $Id -Uri $Uri -ApiKey $ApiKey
+    $active = @(Get-LambdaTodo -Raw -Uri $Uri -ApiKey $ApiKey)
+    $target = $active | Where-Object { $_.id -eq $resolvedId } | Select-Object -First 1
+    if ($null -eq $target) {
+        throw 'Active to-do not found.'
+    }
+
+    $items = [System.Collections.ArrayList]::new()
+    foreach ($todoItem in $active) {
+        if ($todoItem.id -ne $resolvedId) {
+            [void] $items.Add($todoItem)
+        }
+    }
+    $insertAt = [Math]::Min($Position - 1, $items.Count)
+    $items.Insert($insertAt, $target)
+
+    $connection = Resolve-LambdaConnection -Uri $Uri -ApiKey $ApiKey
+    $body = @{ ids = @($items | ForEach-Object { $_.id }) } | ConvertTo-Json -Depth 4
+    $ordered = @(Invoke-RestMethod `
+        -Uri ('{0}/api/todos/order' -f $connection.Uri) `
+        -Method Put `
+        -Headers @{ Authorization = "Bearer $($connection.ApiKey)" } `
+        -ContentType 'application/json; charset=utf-8' `
+        -Body $body)
+
+    $script:LambdaTodoCache = $ordered
+    return ConvertTo-LambdaTodoView -Todos $ordered
+}
+
+function Remove-LambdaTodo {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0, ValueFromPipeline)]
+        [object] $Id,
 
         [string] $Uri,
 
@@ -704,19 +903,17 @@ function Remove-LambdaTodo {
     )
 
     process {
+        $resolvedId = Resolve-LambdaTodoId -Value $Id -Uri $Uri -ApiKey $ApiKey
         $connection = Resolve-LambdaConnection -Uri $Uri -ApiKey $ApiKey
         Invoke-RestMethod `
-            -Uri ('{0}/api/todos/{1}' -f $connection.Uri, $Id) `
+            -Uri ('{0}/api/todos/{1}' -f $connection.Uri, $resolvedId) `
             -Method Delete `
             -Headers @{ Authorization = "Bearer $($connection.ApiKey)" }
+        $script:LambdaTodoCache = @($script:LambdaTodoCache | Where-Object { $_.id -ne $resolvedId })
     }
 }
 
 function Clear-LambdaCompletedTodo {
-    <#
-    .SYNOPSIS
-    Permanently clears every completed Lambda to-do.
-    #>
     [CmdletBinding()]
     param(
         [string] $Uri,
@@ -738,5 +935,8 @@ Set-Alias -Name New-Todo -Value New-LambdaTodo -Scope Global -Force
 Set-Alias -Name Get-Todo -Value Get-LambdaTodo -Scope Global -Force
 Set-Alias -Name Set-Todo -Value Set-LambdaTodo -Scope Global -Force
 Set-Alias -Name Complete-Todo -Value Complete-LambdaTodo -Scope Global -Force
+Set-Alias -Name Move-Todo -Value Move-LambdaTodo -Scope Global -Force
 Set-Alias -Name Remove-Todo -Value Remove-LambdaTodo -Scope Global -Force
 Set-Alias -Name Clear-CompletedTodo -Value Clear-LambdaCompletedTodo -Scope Global -Force
+Set-Alias -Name todo -Value Get-LambdaTodo -Scope Global -Force
+Set-Alias -Name complete -Value Complete-LambdaTodo -Scope Global -Force
