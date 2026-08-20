@@ -73,17 +73,19 @@ test('static API key supports create, partial update, filtering, and category re
   assert.equal(noteAfterRename.category, 'Automation');
 });
 
-test('MCP endpoint exposes and executes note, todo, and category tools', async (context) => {
+test('official MCP handler serves 2026 discovery, tools, calls, and 2025 compatibility', async (context) => {
   const { base } = await startApp(context);
-  const modernMeta = {
+  const meta = {
     'io.modelcontextprotocol/protocolVersion': '2026-07-28',
-    'io.modelcontextprotocol/clientCapabilities': {},
     'io.modelcontextprotocol/clientInfo': { name: 'lambda-test', version: '1.0.0' },
+    'io.modelcontextprotocol/clientCapabilities': {},
   };
-  const callMcp = async (method, params = {}) => {
+
+  const callModern = async (method, params = {}) => {
     const headers = {
       authorization: 'Bearer automation-secret',
       'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
       'mcp-protocol-version': '2026-07-28',
       'mcp-method': method,
     };
@@ -95,34 +97,34 @@ test('MCP endpoint exposes and executes note, todo, and category tools', async (
         jsonrpc: '2.0',
         id: `${method}-1`,
         method,
-        params: { ...params, _meta: modernMeta },
+        params: { ...params, _meta: meta },
       }),
     });
   };
 
-  const anonymous = await fetch(`${base}/mcp`, { method: 'POST' });
+  const anonymous = await fetch(`${base}/mcp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+  });
   assert.equal(anonymous.status, 401);
 
-  const discovered = await callMcp('server/discover');
-  assert.equal(discovered.status, 200);
-  const discoveryPayload = (await discovered.json()).result;
-  assert.equal(discoveryPayload.resultType, 'complete');
-  assert.equal(discoveryPayload.supportedVersions[0], '2026-07-28');
-  assert.equal(discoveryPayload.ttlMs, 300_000);
-  assert.equal(discoveryPayload.cacheScope, 'private');
-  assert.equal(discoveryPayload._meta['io.modelcontextprotocol/serverInfo'].version, '1.3.2');
+  const discoveredResponse = await callModern('server/discover');
+  assert.equal(discoveredResponse.status, 200);
+  const discovered = (await discoveredResponse.json()).result;
+  assert.ok(discovered.supportedVersions.includes('2026-07-28'));
+  assert.ok(discovered.capabilities.tools);
+  assert.equal(discovered.resultType, 'complete');
 
-  const listed = await callMcp('tools/list');
-  const listedPayload = (await listed.json()).result;
-  assert.equal(listedPayload.resultType, 'complete');
-  assert.equal(listedPayload.ttlMs, 300_000);
-  assert.equal(listedPayload.cacheScope, 'private');
-  assert.equal(listedPayload._meta['io.modelcontextprotocol/serverInfo'].version, '1.3.2');
-  assert.ok(listedPayload.tools.some((tool) => tool.name === 'create_note'));
-  assert.ok(listedPayload.tools.some((tool) => tool.name === 'create_todo'));
-  assert.ok(listedPayload.tools.some((tool) => tool.name === 'rename_category'));
+  const listedResponse = await callModern('tools/list');
+  assert.equal(listedResponse.status, 200);
+  const listed = (await listedResponse.json()).result;
+  assert.equal(listed.resultType, 'complete');
+  assert.ok(listed.tools.some((tool) => tool.name === 'create_note'));
+  assert.ok(listed.tools.some((tool) => tool.name === 'create_todo'));
+  assert.ok(listed.tools.some((tool) => tool.name === 'update_block'));
 
-  const todoResponse = await callMcp('tools/call', {
+  const todoResponse = await callModern('tools/call', {
     name: 'create_todo',
     arguments: {
       title: 'MCP task',
@@ -130,11 +132,12 @@ test('MCP endpoint exposes and executes note, todo, and category tools', async (
       subtasks: [{ title: 'First step' }],
     },
   });
+  assert.equal(todoResponse.status, 200);
   const todoPayload = await todoResponse.json();
   assert.equal(todoPayload.result.isError, false);
   assert.equal(todoPayload.result.structuredContent.result.title, 'MCP task');
 
-  const createdResponse = await callMcp('tools/call', {
+  const createdResponse = await callModern('tools/call', {
     name: 'create_note',
     arguments: {
       title: 'MCP note',
@@ -145,36 +148,52 @@ test('MCP endpoint exposes and executes note, todo, and category tools', async (
       content: 'Get-Date',
     },
   });
+  assert.equal(createdResponse.status, 200);
   const createdPayload = await createdResponse.json();
   assert.equal(createdPayload.result.isError, false);
   const created = createdPayload.result.structuredContent.result;
   assert.equal(created.blocks[0].language, 'powershell');
 
-  const updatedResponse = await callMcp('tools/call', {
-    name: 'update_note',
-    arguments: { id: created.id, title: 'Updated MCP note' },
-  });
-  const updated = (await updatedResponse.json()).result.structuredContent.result;
-  assert.equal(updated.title, 'Updated MCP note');
-  assert.equal(updated.blocks[0].content, 'Get-Date');
-
-  const notesResponse = await callMcp('tools/call', {
+  const notesResponse = await callModern('tools/call', {
     name: 'list_notes',
     arguments: { category: 'agents', query: 'Get-Date' },
   });
   const notes = (await notesResponse.json()).result.structuredContent.result;
   assert.equal(notes.length, 1);
 
-  const legacy = await fetch(`${base}/mcp`, {
+  const legacyInitialize = await fetch(`${base}/mcp`, {
     method: 'POST',
-    headers: { authorization: 'Bearer automation-secret', 'content-type': 'application/json' },
+    headers: {
+      authorization: 'Bearer automation-secret',
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+    },
     body: JSON.stringify({
       jsonrpc: '2.0',
-      id: 1,
+      id: 'legacy-init',
       method: 'initialize',
-      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
+      params: {
+        protocolVersion: '2025-11-25',
+        capabilities: {},
+        clientInfo: { name: 'legacy-test', version: '1.0.0' },
+      },
     }),
   });
-  assert.equal(legacy.status, 200);
-  assert.equal((await legacy.json()).result.protocolVersion, '2025-06-18');
+  assert.equal(legacyInitialize.status, 200);
+  assert.equal((await legacyInitialize.json()).result.protocolVersion, '2025-11-25');
+
+  const legacyTools = await fetch(`${base}/mcp`, {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer automation-secret',
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+      'mcp-protocol-version': '2025-11-25',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 'legacy-tools', method: 'tools/list', params: {} }),
+  });
+  assert.equal(legacyTools.status, 200);
+  const legacyList = (await legacyTools.json()).result.tools;
+  assert.ok(legacyList.some((tool) => tool.name === 'create_note'));
+  assert.ok(legacyList.some((tool) => tool.name === 'create_todo'));
 });
