@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateNote, ValidationError } from '../src/validation.js';
+import { validateNote, validateTodo, ValidationError } from '../src/validation.js';
 
 test('normalises tags and legacy heading blocks', () => {
   const note = validateNote({
@@ -25,6 +25,29 @@ test('creates notes without a default text block', () => {
     tags: [],
   });
   assert.deepEqual(note.blocks, []);
+});
+
+test('validates todo due dates and normalises string subtasks', () => {
+  const todo = validateTodo({
+    title: ' Review tenant ',
+    dueDate: '2026-08-22',
+    subtasks: [' Export configuration ', { title: 'Review exclusions', completed: true }],
+  });
+  assert.equal(todo.title, 'Review tenant');
+  assert.equal(todo.dueDate, '2026-08-22');
+  assert.equal(todo.completed, false);
+  assert.equal(todo.subtasks.length, 2);
+  assert.equal(todo.subtasks[0].title, 'Export configuration');
+  assert.equal(todo.subtasks[1].completed, true);
+  assert.ok(todo.subtasks[0].id);
+});
+
+test('rejects invalid todo due dates', () => {
+  assert.throws(() => validateTodo({
+    title: 'Bad date',
+    dueDate: '2026-02-31',
+    subtasks: [],
+  }), /Due date is invalid/);
 });
 
 test('rejects unsupported image data', () => {
