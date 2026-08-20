@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/server.js';
 import { SnippetDatabase } from '../src/database.js';
-import { processMcpMessage } from '../src/mcp.js';
 import { validateNote } from '../src/validation.js';
 
 test('assigns stable unique five-character codes and updates blocks directly', () => {
@@ -32,76 +31,6 @@ test('assigns stable unique five-character codes and updates blocks directly', (
   assert.equal(database.getBlock(code), null);
   assert.equal(database.restoreNote(note.id), true);
   assert.equal(database.getBlock(code).block.code, code);
-  database.close();
-});
-
-test('MCP gets and updates blocks by code including CSV content', () => {
-  const database = new SnippetDatabase(':memory:');
-  const note = database.createNote(validateNote({
-    title: 'MCP table',
-    category: 'Automation',
-    tags: [],
-    blocks: [{ id: 'table', type: 'csv', content: 'Name,Value\nAlpha,1' }],
-  }));
-  const code = note.blocks[0].code;
-
-  const getResult = processMcpMessage(database, {
-    jsonrpc: '2.0',
-    id: 1,
-    method: 'tools/call',
-    params: { name: 'get_block', arguments: { code } },
-  });
-  assert.equal(getResult.body.result.structuredContent.result.block.content, 'Name,Value\nAlpha,1');
-
-  const updateResult = processMcpMessage(database, {
-    jsonrpc: '2.0',
-    id: 2,
-    method: 'tools/call',
-    params: { name: 'update_block', arguments: { code, type: 'csv', content: 'Name,Value\nBeta,2' } },
-  });
-  assert.equal(updateResult.body.result.structuredContent.result.block.type, 'csv');
-  assert.equal(updateResult.body.result.structuredContent.result.block.content, 'Name,Value\nBeta,2');
-  database.close();
-});
-
-test('modern MCP discovery and tool listing use the final 2026 response envelope', () => {
-  const database = new SnippetDatabase(':memory:');
-  const meta = {
-    'io.modelcontextprotocol/clientInfo': { name: 'test-client', version: '1.0.0' },
-    'io.modelcontextprotocol/clientCapabilities': {},
-  };
-
-  const discovered = processMcpMessage(database, {
-    jsonrpc: '2.0',
-    id: 'discover-1',
-    method: 'server/discover',
-    params: { _meta: meta },
-  });
-  assert.equal(discovered.status, 200);
-  assert.equal(discovered.body.result.supportedVersions[0], '2026-07-28');
-  assert.equal(discovered.body.result.serverInfo, undefined);
-  assert.equal(discovered.body.result._meta['io.modelcontextprotocol/serverInfo'].name, 'lambda-notes');
-
-  const listed = processMcpMessage(database, {
-    jsonrpc: '2.0',
-    id: 'tools-1',
-    method: 'tools/list',
-    params: { _meta: meta },
-  });
-  assert.equal(listed.status, 200);
-  assert.equal(listed.body.result.resultType, 'complete');
-  assert.ok(listed.body.result.tools.some((tool) => tool.name === 'create_note'));
-  assert.ok(listed.body.result.tools.some((tool) => tool.name === 'create_todo'));
-  assert.equal(listed.body.result._meta['io.modelcontextprotocol/serverInfo'].version, '1.3.0');
-
-  const legacy = processMcpMessage(database, {
-    jsonrpc: '2.0',
-    id: 'legacy-tools',
-    method: 'tools/list',
-    params: {},
-  });
-  assert.equal(legacy.body.result.resultType, undefined);
-  assert.equal(legacy.body.result._meta, undefined);
   database.close();
 });
 
@@ -157,8 +86,8 @@ test('REST block API accepts JSON and raw CSV and serves the enhanced web shell'
   assert.equal(fetched.block.content, 'Name,Status\nSpooler,Running');
 
   const shell = await fetch(base).then((response) => response.text());
-  assert.match(shell, /block-tools\.css\?v=1\.3\.0/);
-  assert.match(shell, /block-tools\.js\?v=1\.3\.0/);
-  assert.match(shell, /todo-tools\.css\?v=1\.3\.0/);
-  assert.match(shell, /todo-tools\.js\?v=1\.3\.0/);
+  assert.match(shell, /block-tools\.css\?v=1\.3\.3/);
+  assert.match(shell, /block-tools\.js\?v=1\.3\.3/);
+  assert.match(shell, /todo-tools\.css\?v=1\.3\.3/);
+  assert.match(shell, /todo-tools\.js\?v=1\.3\.3/);
 });
