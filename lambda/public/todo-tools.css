@@ -262,6 +262,10 @@
   transition: transform .16s ease;
 }
 
+.todo-completed-toggle.expanded svg {
+  transform: rotate(180deg);
+}
+
 .todo-completed-toggle strong {
   color: var(--ink);
   font-size: .88rem;
