@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AuthManager } from '../src/auth.js';
+import { apiKeyFrom, apiKeyMatches, AuthManager } from '../src/auth.js';
 import { SnippetDatabase } from '../src/database.js';
 
 function requestWith(token) {
@@ -12,6 +12,28 @@ function requestWith(token) {
     socket: { remoteAddress: '127.0.0.1' },
   };
 }
+
+function apiRequest(headers) {
+  return { headers, socket: { remoteAddress: '127.0.0.1' } };
+}
+
+test('accepts common API key header formats', () => {
+  const key = 'test-secret-key';
+  const requests = [
+    apiRequest({ authorization: `Bearer ${key}` }),
+    apiRequest({ authorization: `ApiKey ${key}` }),
+    apiRequest({ authorization: `Api-Key ${key}` }),
+    apiRequest({ authorization: key }),
+    apiRequest({ 'x-api-key': key }),
+    apiRequest({ 'api-key': key }),
+  ];
+
+  for (const request of requests) {
+    assert.equal(apiKeyFrom(request), key);
+    assert.equal(apiKeyMatches(request, key), true);
+  }
+  assert.equal(apiKeyMatches(apiRequest({ authorization: 'Bearer wrong-key' }), key), false);
+});
 
 test('extends a session whenever it is used', () => {
   const auth = new AuthManager('test password', 30);
