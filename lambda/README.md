@@ -175,9 +175,19 @@ Get-Snip C3D4E -AsTable
 
 ## MCP endpoint
 
-The stateless Streamable HTTP endpoint is `POST /mcp`. Configure an MCP client with that URL and an `Authorization: Bearer <key>` header. The server supports the current `2026-07-28` protocol and the legacy initialize flow used by `2025-11-25`, `2025-06-18`, and `2025-03-26` clients.
+The stateless Streamable HTTP endpoint is `POST /mcp`. Configure an MCP client with that URL and an API key. Lambda accepts bearer authorization and common API-key header formats. The server supports the current `2026-07-28` protocol and the legacy initialize flow used by `2025-11-25`, `2025-06-18`, and `2025-03-26` clients.
 
 Its tools are `list_notes`, `get_note`, `get_block`, `update_block`, `create_note`, `update_note`, `delete_note`, `restore_note`, `list_categories`, `create_category`, `rename_category`, and `delete_category`. `get_block` and `update_block` address a block directly with its five-character code; CSV data is passed as standard CSV text in `content`. Deletes are recoverable: the MCP interface deliberately moves notes to the recycle bin and does not expose permanent deletion.
+
+### ChatGPT Business
+
+ChatGPT Business supports custom MCP apps in Developer Mode. Lambda must be reachable from ChatGPT over HTTPS unless Secure MCP Tunnel is being used.
+
+Create a custom app in ChatGPT and use the Lambda MCP URL, for example `https://notes.example.com/mcp`. Choose **API key** authentication and enter the same `api_key` configured for Lambda, then scan the server tools. A successful scan should expose the Lambda note, block, and category actions listed above.
+
+If Lambda is upgraded after the custom app was created, use **Refresh** or scan the tools again. ChatGPT snapshots custom app tool definitions rather than continuously re-reading them. On ChatGPT Business, a published custom app may need to be recreated and republished when its MCP tool definitions change.
+
+If the app shows as connected with API-key authorization but reports no actions, first confirm Lambda is on version 1.2.8 or later and then refresh/recreate the draft app. Lambda 1.2.8 aligns its modern MCP response envelope with the final `2026-07-28` specification and broadens API-key header compatibility.
 
 ## Home Assistant app
 
