@@ -91,7 +91,8 @@ test('modern MCP discovery and tool listing use the final 2026 response envelope
   assert.equal(listed.status, 200);
   assert.equal(listed.body.result.resultType, 'complete');
   assert.ok(listed.body.result.tools.some((tool) => tool.name === 'create_note'));
-  assert.equal(listed.body.result._meta['io.modelcontextprotocol/serverInfo'].version, '1.2.9');
+  assert.ok(listed.body.result.tools.some((tool) => tool.name === 'create_todo'));
+  assert.equal(listed.body.result._meta['io.modelcontextprotocol/serverInfo'].version, '1.3.0');
 
   const legacy = processMcpMessage(database, {
     jsonrpc: '2.0',
@@ -156,6 +157,8 @@ test('REST block API accepts JSON and raw CSV and serves the enhanced web shell'
   assert.equal(fetched.block.content, 'Name,Status\nSpooler,Running');
 
   const shell = await fetch(base).then((response) => response.text());
-  assert.match(shell, /block-tools\.css\?v=1\.2\.0/);
-  assert.match(shell, /block-tools\.js\?v=1\.2\.0/);
+  assert.match(shell, /block-tools\.css\?v=1\.3\.0/);
+  assert.match(shell, /block-tools\.js\?v=1\.3\.0/);
+  assert.match(shell, /todo-tools\.css\?v=1\.3\.0/);
+  assert.match(shell, /todo-tools\.js\?v=1\.3\.0/);
 });
