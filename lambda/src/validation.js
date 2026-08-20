@@ -226,11 +226,13 @@ export function validateBackup(input) {
       subtasks: inputTodo.subtasks,
       completed: Boolean(inputTodo.completedAt),
     });
+    const priority = Number(inputTodo.priority);
     return {
       id,
       title: todo.title,
       dueDate: todo.dueDate,
       subtasks: todo.subtasks,
+      priority: Number.isSafeInteger(priority) && priority > 0 ? priority : 0,
       completed: Boolean(inputTodo.completedAt),
       completedAt: timestamp(inputTodo.completedAt, 'To-do completion date', { nullable: true }),
       createdAt: timestamp(inputTodo.createdAt, 'To-do created date'),
