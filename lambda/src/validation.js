@@ -29,6 +29,48 @@ function withCode(block, code) {
   return code ? { ...block, code } : block;
 }
 
+function dueDate(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new ValidationError('Due date must use YYYY-MM-DD.');
+  }
+  const parsed = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+    throw new ValidationError('Due date is invalid.');
+  }
+  return value;
+}
+
+function validateSubtasks(input) {
+  if (input === undefined || input === null) return [];
+  if (!Array.isArray(input) || input.length > 100) throw new ValidationError('Subtasks must be a list of at most 100 items.');
+  const seen = new Set();
+  return input.map((item) => {
+    const source = typeof item === 'string' ? { title: item } : item;
+    if (!source || typeof source !== 'object' || Array.isArray(source)) throw new ValidationError('Every subtask must be text or an object.');
+    const id = typeof source.id === 'string' && source.id.length <= 100 ? source.id : randomUUID();
+    if (seen.has(id)) throw new ValidationError('Subtask IDs must be unique within a to-do.');
+    seen.add(id);
+    return {
+      id,
+      title: text(String(source.title || ''), 300, 'Subtask title', { allowEmpty: false }),
+      completed: Boolean(source.completed),
+    };
+  });
+}
+
+export function validateTodo(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new ValidationError('A to-do object is required.');
+  }
+  return {
+    title: text(String(input.title || ''), 300, 'To-do title', { allowEmpty: false }),
+    dueDate: dueDate(input.dueDate ?? input.due_date),
+    subtasks: validateSubtasks(input.subtasks),
+    completed: Boolean(input.completed),
+  };
+}
+
 export function validateNote(input, { partial = false } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new ValidationError('A note object is required.');
@@ -169,5 +211,32 @@ export function validateBackup(input) {
     };
   });
 
-  return { format: 'lambda-backup', version: 1, categories, notes };
+  const todoIds = new Set();
+  const todos = (Array.isArray(input.todos) ? input.todos : []).map((inputTodo) => {
+    if (!inputTodo || typeof inputTodo !== 'object' || Array.isArray(inputTodo)) {
+      throw new ValidationError('Every backup to-do must be an object.');
+    }
+    const id = String(inputTodo.id || '');
+    if (!/^[a-f0-9-]{1,100}$/i.test(id)) throw new ValidationError('A backup to-do has an invalid ID.');
+    if (todoIds.has(id.toLocaleLowerCase())) throw new ValidationError(`Duplicate to-do ID: ${id}.`);
+    todoIds.add(id.toLocaleLowerCase());
+    const todo = validateTodo({
+      title: inputTodo.title,
+      dueDate: inputTodo.dueDate,
+      subtasks: inputTodo.subtasks,
+      completed: Boolean(inputTodo.completedAt),
+    });
+    return {
+      id,
+      title: todo.title,
+      dueDate: todo.dueDate,
+      subtasks: todo.subtasks,
+      completed: Boolean(inputTodo.completedAt),
+      completedAt: timestamp(inputTodo.completedAt, 'To-do completion date', { nullable: true }),
+      createdAt: timestamp(inputTodo.createdAt, 'To-do created date'),
+      updatedAt: timestamp(inputTodo.updatedAt, 'To-do updated date'),
+    };
+  });
+
+  return { format: 'lambda-backup', version: 1, categories, notes, todos };
 }
