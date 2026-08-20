@@ -99,10 +99,17 @@
   border-radius: 13px;
   background: var(--surface);
   box-shadow: 0 8px 22px rgba(21, 25, 39, .035);
+  transition: opacity .12s ease, border-color .12s ease, box-shadow .12s ease;
 }
 
 .todo-card.completed {
   opacity: .72;
+}
+
+.todo-card.dragging {
+  opacity: .58;
+  border-color: var(--accent);
+  box-shadow: 0 12px 28px rgba(21, 25, 39, .1);
 }
 
 .todo-main-row {
@@ -111,6 +118,41 @@
   gap: 11px;
   align-items: start;
   padding: 15px 14px;
+}
+
+.todo-main-row.priority-enabled {
+  grid-template-columns: 30px 24px minmax(0, 1fr) 38px;
+}
+
+.todo-drag-handle {
+  width: 30px;
+  height: 30px;
+  margin-top: 1px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  color: var(--soft);
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+}
+
+.todo-drag-handle:hover {
+  color: var(--ink);
+  background: var(--accent-soft);
+}
+
+.todo-drag-handle:active {
+  cursor: grabbing;
+}
+
+.todo-drag-handle svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+  stroke: none;
 }
 
 .todo-complete-checkbox,
@@ -346,6 +388,16 @@
   .todo-main-row {
     grid-template-columns: 22px minmax(0, 1fr) 34px;
     padding: 12px 10px;
+  }
+
+  .todo-main-row.priority-enabled {
+    grid-template-columns: 28px 22px minmax(0, 1fr) 34px;
+    gap: 8px;
+  }
+
+  .todo-drag-handle {
+    width: 28px;
+    height: 28px;
   }
 
   .todo-meta-row {
