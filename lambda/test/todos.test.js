@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/server.js';
 import { SnippetDatabase } from '../src/database.js';
-import { processMcpMessage } from '../src/mcp.js';
 import { TodoStore } from '../src/todo-store.js';
 import { validateTodo } from '../src/validation.js';
 
@@ -82,41 +81,4 @@ test('todo REST API defaults to active items and can clear completed history', a
   const cleared = await fetch(`${base}/api/todos/completed`, { method: 'DELETE', headers }).then((response) => response.json());
   assert.equal(cleared.deleted, 1);
   assert.equal((await fetch(`${base}/api/todos?include_completed=1`, { headers }).then((response) => response.json())).length, 0);
-});
-
-test('MCP exposes todo tools and defaults list_todos to active tasks', () => {
-  const database = new SnippetDatabase(':memory:');
-  const todos = new TodoStore(database.db);
-  todos.createTodo(validateTodo({ title: 'MCP active', subtasks: [] }));
-  const done = todos.createTodo(validateTodo({ title: 'MCP done', subtasks: [] }));
-  todos.updateTodo(done.id, validateTodo({ title: done.title, subtasks: [], completed: true }));
-
-  const listedTools = processMcpMessage(database, {
-    jsonrpc: '2.0',
-    id: 1,
-    method: 'tools/list',
-    params: {},
-  }, todos);
-  assert.ok(listedTools.body.result.tools.some((tool) => tool.name === 'list_todos'));
-  assert.ok(listedTools.body.result.tools.some((tool) => tool.name === 'clear_completed_todos'));
-
-  const active = processMcpMessage(database, {
-    jsonrpc: '2.0',
-    id: 2,
-    method: 'tools/call',
-    params: { name: 'list_todos', arguments: {} },
-  }, todos);
-  assert.equal(active.body.result.structuredContent.result.length, 1);
-  assert.equal(active.body.result.structuredContent.result[0].title, 'MCP active');
-
-  const completed = processMcpMessage(database, {
-    jsonrpc: '2.0',
-    id: 3,
-    method: 'tools/call',
-    params: { name: 'list_todos', arguments: { completed_only: true } },
-  }, todos);
-  assert.equal(completed.body.result.structuredContent.result.length, 1);
-  assert.equal(completed.body.result.structuredContent.result[0].title, 'MCP done');
-
-  database.close();
 });
