@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { EncryptionVault } from '../src/encryption.js';
 import { SnippetDatabase } from '../src/database.js';
+import { TodoStore } from '../src/todo-store.js';
 
 test('persists a password-wrapped data key and encrypts authenticated data', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lambda-encryption-'));
@@ -54,6 +55,32 @@ test('stores note and version content encrypted in SQLite', () => {
     assert.doesNotMatch(storedVersion.blocks_json, /body/i);
     assert.equal(database.getNote(note.id).title, 'Updated title');
     assert.equal(database.listVersions(note.id)[0].title, 'Secret title');
+    database.close();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('stores todo titles and subtasks encrypted in SQLite', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lambda-todo-encryption-'));
+  const dbPath = path.join(dir, 'snippet.db');
+  try {
+    const vault = new EncryptionVault('todo password', `${dbPath}.encryption.json`);
+    const database = new SnippetDatabase(dbPath, vault);
+    const todos = new TodoStore(database.db, vault);
+    const todo = todos.createTodo({
+      title: 'Secret task title',
+      dueDate: '2026-08-22',
+      subtasks: [{ id: 'step-one', title: 'Secret task step', completed: false }],
+      completed: false,
+    });
+
+    const stored = database.db.prepare('SELECT title, due_date, subtasks_json FROM todos WHERE id = ?').get(todo.id);
+    assert.doesNotMatch(stored.title, /Secret task title/);
+    assert.doesNotMatch(stored.subtasks_json, /Secret task step/);
+    assert.equal(stored.due_date, '2026-08-22');
+    assert.equal(todos.getTodo(todo.id).title, 'Secret task title');
+    assert.equal(todos.getTodo(todo.id).subtasks[0].title, 'Secret task step');
     database.close();
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
