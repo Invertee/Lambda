@@ -12,6 +12,14 @@ const state = {
   savingOrder: false,
 };
 
+const DUE_CHOICES = [
+  ['today', 'Today'],
+  ['tomorrow', 'Tomorrow'],
+  ['end-week', 'End of week'],
+  ['next-week', 'Next week'],
+  ['none', 'No date'],
+];
+
 function apiUrl(path = '') {
   return new URL(`api/${path.replace(/^\//, '')}`, APP_BASE);
 }
@@ -27,6 +35,48 @@ async function api(path, options = {}) {
     throw new Error(message);
   }
   return response.status === 204 ? null : response.json();
+}
+
+function dateKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function dueDateForChoice(choice) {
+  const base = new Date();
+  base.setHours(0, 0, 0, 0);
+  if (choice === 'none') return '';
+  if (choice === 'today') return dateKey(base);
+  if (choice === 'tomorrow') {
+    base.setDate(base.getDate() + 1);
+    return dateKey(base);
+  }
+  if (choice === 'end-week') {
+    const day = base.getDay();
+    const offset = day === 6 ? 6 : (5 - day + 7) % 7;
+    base.setDate(base.getDate() + offset);
+    return dateKey(base);
+  }
+  if (choice === 'next-week') {
+    const day = base.getDay();
+    let offset = (8 - day) % 7;
+    if (offset === 0) offset = 7;
+    base.setDate(base.getDate() + offset);
+    return dateKey(base);
+  }
+  return '';
+}
+
+function dueChoiceMarkup() {
+  return DUE_CHOICES.map(([value, label]) => (
+    `<button type="button" class="todo-due-choice" data-due-choice="${value}">${label}</button>`
+  )).join('');
+}
+
+function syncDueChoices(container, dueDate) {
+  if (!container) return;
+  $$('[data-due-choice]', container).forEach((button) => {
+    button.classList.toggle('active', dueDateForChoice(button.dataset.dueChoice) === (dueDate || ''));
+  });
 }
 
 function ensureUi() {
@@ -66,10 +116,11 @@ function ensureUi() {
           <span>New to-do</span>
           <input id="todo-create-title" maxlength="300" placeholder="Add a task" autocomplete="off" required>
         </label>
-        <label class="todo-create-date">
+        <div class="todo-create-date">
           <span>Due date</span>
-          <input id="todo-create-due" type="date">
-        </label>
+          <input id="todo-create-due" type="hidden" value="">
+          <div id="todo-create-due-choices" class="todo-due-choices">${dueChoiceMarkup()}</div>
+        </div>
         <button class="primary-button" type="submit">Add to-do</button>
       </form>
 
@@ -102,6 +153,7 @@ function ensureUi() {
       </section>
     `;
     offlineBanner.insertAdjacentElement('afterend', section);
+    syncDueChoices($('#todo-create-due-choices'), '');
   }
 
   return true;
@@ -136,10 +188,10 @@ function formatDue(todo) {
   if (!todo.dueDate) return '';
   const due = new Date(`${todo.dueDate}T00:00:00`);
   const today = new Date();
-  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const todayKey = dateKey(today);
   if (todo.dueDate === todayKey) return 'Due today';
   const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
-  const tomorrowKey = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`;
+  const tomorrowKey = dateKey(tomorrow);
   if (todo.dueDate === tomorrowKey) return 'Due tomorrow';
   const label = due.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: due.getFullYear() !== today.getFullYear() ? 'numeric' : undefined });
   return todo.dueDate < todayKey ? `Overdue · ${label}` : `Due ${label}`;
@@ -188,13 +240,11 @@ function todoCard(todo) {
   const dueLabel = document.createElement('span');
   dueLabel.className = `todo-due-label${todo.dueDate && !todo.completed && formatDue(todo).startsWith('Overdue') ? ' overdue' : ''}`;
   dueLabel.textContent = formatDue(todo) || 'No due date';
-  const dueInput = document.createElement('input');
-  dueInput.type = 'date';
-  dueInput.className = 'todo-due-input';
-  dueInput.dataset.todoDue = '';
-  dueInput.value = todo.dueDate || '';
-  dueInput.setAttribute('aria-label', 'Due date');
-  meta.append(dueLabel, dueInput);
+  const dueChoices = document.createElement('div');
+  dueChoices.className = 'todo-due-choices';
+  dueChoices.innerHTML = dueChoiceMarkup();
+  syncDueChoices(dueChoices, todo.dueDate || '');
+  meta.append(dueLabel, dueChoices);
 
   const subtasks = document.createElement('div');
   subtasks.className = 'todo-subtasks';
@@ -354,6 +404,7 @@ async function createTodo(event) {
     state.todos.push(created);
     $('#todo-create-title').value = '';
     $('#todo-create-due').value = '';
+    syncDueChoices($('#todo-create-due-choices'), '');
     renderTodos();
     $('#todo-create-title').focus();
   } catch (error) {
@@ -381,10 +432,6 @@ async function handleTodoChange(event) {
       await patchTodo(id, { title });
       return;
     }
-    if (event.target.matches('[data-todo-due]')) {
-      await patchTodo(id, { dueDate: event.target.value || null });
-      return;
-    }
     if (event.target.matches('[data-subtask-complete], [data-subtask-title]')) {
       await patchTodo(id, { subtasks: subtasksFromCard(card) });
     }
@@ -396,6 +443,24 @@ async function handleTodoChange(event) {
 }
 
 async function handleTodoClick(event) {
+  const dueButton = event.target.closest('[data-due-choice]');
+  if (dueButton) {
+    const dueDate = dueDateForChoice(dueButton.dataset.dueChoice);
+    const card = dueButton.closest('[data-todo-id]');
+    if (card) {
+      try { await patchTodo(card.dataset.todoId, { dueDate: dueDate || null }); }
+      catch (error) {
+        window.alert(error.message || 'Due date could not be updated.');
+        await refreshActiveTodos();
+        if (state.completedLoaded) await refreshCompletedTodos();
+      }
+    } else if (dueButton.closest('#todo-create-form')) {
+      $('#todo-create-due').value = dueDate;
+      syncDueChoices($('#todo-create-due-choices'), dueDate);
+    }
+    return;
+  }
+
   const card = event.target.closest('[data-todo-id]');
   const id = card?.dataset.todoId;
 
