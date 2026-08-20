@@ -262,9 +262,9 @@ function renderTodos() {
   }
 
   $('#completed-todos-panel').classList.toggle('hidden', !state.completedExpanded);
+  $('#completed-todos-toggle').classList.toggle('expanded', state.completedExpanded);
   $('#completed-todos-toggle').setAttribute('aria-expanded', String(state.completedExpanded));
   $('#completed-todos-toggle > span:last-child').textContent = state.completedExpanded ? 'Hide' : 'Show';
-  $('svg', $('#completed-todos-toggle')).style.transform = state.completedExpanded ? 'rotate(180deg)' : '';
 }
 
 async function refreshTodos() {
