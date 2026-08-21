@@ -1,6 +1,7 @@
 const APP_BASE = new URL('.', import.meta.url);
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+const TODO_POLL_MS = 30000;
 
 const state = {
   todos: [],
@@ -10,6 +11,8 @@ const state = {
   showing: false,
   draggingId: '',
   savingOrder: false,
+  refreshing: false,
+  pollTimer: null,
 };
 
 const DUE_CHOICES = [
@@ -79,6 +82,24 @@ function syncDueChoices(container, dueDate) {
   });
 }
 
+function resetCreateDueDate() {
+  const input = $('#todo-create-due');
+  if (!input) return;
+  input.value = dueDateForChoice('today');
+  syncDueChoices($('#todo-create-due-choices'), input.value);
+}
+
+function compareActiveTodos(left, right) {
+  const leftDate = left.dueDate || '';
+  const rightDate = right.dueDate || '';
+  if (!leftDate && rightDate) return 1;
+  if (leftDate && !rightDate) return -1;
+  if (leftDate !== rightDate) return leftDate.localeCompare(rightDate);
+  const priorityDifference = Number(left.priority || 0) - Number(right.priority || 0);
+  if (priorityDifference) return priorityDifference;
+  return String(right.updatedAt || '').localeCompare(String(left.updatedAt || ''));
+}
+
 function ensureUi() {
   const filterNav = $('.filter-nav');
   const workspace = $('.workspace');
@@ -118,8 +139,10 @@ function ensureUi() {
         </label>
         <div class="todo-create-date">
           <span>Due date</span>
-          <input id="todo-create-due" type="hidden" value="">
-          <div id="todo-create-due-choices" class="todo-due-choices">${dueChoiceMarkup()}</div>
+          <div class="todo-due-controls">
+            <div id="todo-create-due-choices" class="todo-due-choices">${dueChoiceMarkup()}</div>
+            <input id="todo-create-due" class="todo-custom-due-input" type="date" aria-label="Custom due date" title="Custom due date">
+          </div>
         </div>
         <button class="primary-button" type="submit">Add to-do</button>
       </form>
@@ -153,7 +176,7 @@ function ensureUi() {
       </section>
     `;
     offlineBanner.insertAdjacentElement('afterend', section);
-    syncDueChoices($('#todo-create-due-choices'), '');
+    resetCreateDueDate();
   }
 
   return true;
@@ -202,8 +225,8 @@ function dragHandle() {
   drag.type = 'button';
   drag.className = 'todo-drag-handle';
   drag.dataset.todoDrag = '';
-  drag.title = 'Drag to change priority';
-  drag.setAttribute('aria-label', 'Drag to change priority');
+  drag.title = 'Drag to change priority within this due date';
+  drag.setAttribute('aria-label', 'Drag to change priority within this due date');
   drag.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/></svg>';
   return drag;
 }
@@ -213,6 +236,7 @@ function todoCard(todo) {
   card.className = `todo-card${todo.completed ? ' completed' : ''}`;
   card.dataset.todoId = todo.id;
   card.dataset.priority = String(todo.priority || 0);
+  card.dataset.dueDate = todo.dueDate || '';
   card.draggable = false;
 
   const main = document.createElement('div');
@@ -244,7 +268,14 @@ function todoCard(todo) {
   dueChoices.className = 'todo-due-choices';
   dueChoices.innerHTML = dueChoiceMarkup();
   syncDueChoices(dueChoices, todo.dueDate || '');
-  meta.append(dueLabel, dueChoices);
+  const customDue = document.createElement('input');
+  customDue.type = 'date';
+  customDue.className = 'todo-custom-due-input';
+  customDue.dataset.todoCustomDue = '';
+  customDue.value = todo.dueDate || '';
+  customDue.setAttribute('aria-label', 'Custom due date');
+  customDue.title = 'Custom due date';
+  meta.append(dueLabel, dueChoices, customDue);
 
   const subtasks = document.createElement('div');
   subtasks.className = 'todo-subtasks';
@@ -303,7 +334,7 @@ function subtaskRow(subtask) {
 }
 
 function renderTodos() {
-  const active = state.todos.filter((todo) => !todo.completed);
+  const active = state.todos.filter((todo) => !todo.completed).sort(compareActiveTodos);
   const completed = state.todos.filter((todo) => todo.completed);
 
   $('#todos-count').textContent = active.length;
@@ -335,7 +366,7 @@ function renderTodos() {
   $('#completed-todos-toggle > span:last-child').textContent = state.completedExpanded ? 'Hide' : 'Show';
 }
 
-async function refreshActiveTodos() {
+async function refreshActiveTodos({ silent = false } = {}) {
   try {
     const active = await api('todos');
     const completed = state.todos.filter((todo) => todo.completed);
@@ -343,7 +374,7 @@ async function refreshActiveTodos() {
     state.loaded = true;
     renderTodos();
   } catch (error) {
-    if (state.showing) {
+    if (!silent && state.showing) {
       const empty = document.createElement('div');
       empty.className = 'todo-empty error';
       empty.textContent = error.message || 'To-Dos could not be loaded.';
@@ -352,7 +383,7 @@ async function refreshActiveTodos() {
   }
 }
 
-async function refreshCompletedTodos() {
+async function refreshCompletedTodos({ silent = false } = {}) {
   try {
     const completed = await api('todos?completed=1');
     const active = state.todos.filter((todo) => !todo.completed);
@@ -360,12 +391,31 @@ async function refreshCompletedTodos() {
     state.completedLoaded = true;
     renderTodos();
   } catch (error) {
-    if (state.showing) {
+    if (!silent && state.showing) {
       const empty = document.createElement('div');
       empty.className = 'todo-empty error';
       empty.textContent = error.message || 'Completed To-Dos could not be loaded.';
       $('#completed-todos-list').replaceChildren(empty);
     }
+  }
+}
+
+function todoEditInProgress() {
+  if (state.draggingId || state.savingOrder) return true;
+  if (!state.showing) return false;
+  const activeElement = document.activeElement;
+  return Boolean(activeElement && $('#todos-view')?.contains(activeElement) && activeElement.matches('input, textarea, select'));
+}
+
+async function refreshTodoData() {
+  const shell = $('#app-shell');
+  if (!shell || shell.classList.contains('hidden') || document.visibilityState === 'hidden' || todoEditInProgress() || state.refreshing) return;
+  state.refreshing = true;
+  try {
+    await refreshActiveTodos({ silent: true });
+    if (state.showing && state.completedExpanded) await refreshCompletedTodos({ silent: true });
+  } finally {
+    state.refreshing = false;
   }
 }
 
@@ -403,8 +453,7 @@ async function createTodo(event) {
     });
     state.todos.push(created);
     $('#todo-create-title').value = '';
-    $('#todo-create-due').value = '';
-    syncDueChoices($('#todo-create-due-choices'), '');
+    resetCreateDueDate();
     renderTodos();
     $('#todo-create-title').focus();
   } catch (error) {
@@ -415,6 +464,11 @@ async function createTodo(event) {
 }
 
 async function handleTodoChange(event) {
+  if (event.target.matches('#todo-create-due')) {
+    syncDueChoices($('#todo-create-due-choices'), event.target.value || '');
+    return;
+  }
+
   const card = event.target.closest('[data-todo-id]');
   if (!card) return;
   const id = card.dataset.todoId;
@@ -430,6 +484,10 @@ async function handleTodoChange(event) {
         return;
       }
       await patchTodo(id, { title });
+      return;
+    }
+    if (event.target.matches('[data-todo-custom-due]')) {
+      await patchTodo(id, { dueDate: event.target.value || null });
       return;
     }
     if (event.target.matches('[data-subtask-complete], [data-subtask-title]')) {
@@ -518,12 +576,14 @@ function handleTodoDragOver(event) {
   if (!state.draggingId) return;
   const list = event.target.closest('#active-todos-list');
   if (!list) return;
-  event.preventDefault();
-  event.dataTransfer.dropEffect = 'move';
 
   const dragging = $('.todo-card.dragging', list);
   const target = event.target.closest('.todo-card:not(.dragging)');
   if (!dragging || !target || target.parentElement !== list) return;
+  if (dragging.dataset.dueDate !== target.dataset.dueDate) return;
+
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
   const rect = target.getBoundingClientRect();
   if (event.clientY < rect.top + rect.height / 2) target.before(dragging);
   else target.after(dragging);
@@ -601,10 +661,16 @@ function wire() {
 
   const shell = $('#app-shell');
   const shellObserver = new MutationObserver(() => {
-    if (!shell.classList.contains('hidden') && !state.loaded) refreshActiveTodos();
+    if (!shell.classList.contains('hidden')) showTodoView();
   });
   shellObserver.observe(shell, { attributes: true, attributeFilter: ['class'] });
-  if (!shell.classList.contains('hidden')) refreshActiveTodos();
+  if (!shell.classList.contains('hidden')) showTodoView();
+
+  state.pollTimer = window.setInterval(refreshTodoData, TODO_POLL_MS);
+  window.addEventListener('focus', refreshTodoData);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') refreshTodoData();
+  });
 }
 
 wire();
