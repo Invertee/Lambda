@@ -4,7 +4,7 @@ import { toNodeHandler } from '@modelcontextprotocol/node';
 import { validateBlockCode, validateCategoryName, validateNote, validateTodo } from './validation.js';
 
 const SERVER_NAME = 'lambda-notes';
-const SERVER_VERSION = '1.3.6';
+const SERVER_VERSION = '1.3.7';
 
 const blockSchema = {
   type: 'object',
@@ -55,7 +55,7 @@ export const MCP_TOOLS = [
   {
     name: 'list_todos',
     title: 'List to-dos',
-    description: 'List active to-dos by default in priority order. Completed to-dos are excluded unless explicitly requested.',
+    description: 'List active to-dos by default ordered by due date, with manual priority used within the same due date and undated tasks last. Completed to-dos are excluded unless explicitly requested.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -82,7 +82,7 @@ export const MCP_TOOLS = [
   {
     name: 'create_todo',
     title: 'Create a to-do',
-    description: 'Create a new active to-do with an optional due date and subtasks. New active items are appended to the priority list.',
+    description: 'Create a new active to-do with an optional due date and subtasks. Date ordering is automatic; priority is used to order tasks sharing a due date.',
     inputSchema: {
       type: 'object',
       properties: todoFields,
@@ -106,14 +106,14 @@ export const MCP_TOOLS = [
   {
     name: 'reorder_todos',
     title: 'Reorder active to-dos',
-    description: 'Set the priority order of every active to-do. Supply all active to-do IDs from highest to lowest priority.',
+    description: 'Set manual priority for active to-dos. Due date remains the primary sort key, so priority affects tasks sharing the same due date. Supply all active to-do IDs.',
     inputSchema: {
       type: 'object',
       properties: {
         ids: {
           type: 'array',
           items: { type: 'string' },
-          description: 'All active to-do UUIDs in the desired priority order.',
+          description: 'All active to-do UUIDs in the desired manual priority order.',
         },
       },
       required: ['ids'],
@@ -124,7 +124,7 @@ export const MCP_TOOLS = [
   {
     name: 'complete_todo',
     title: 'Complete or reopen a to-do',
-    description: 'Mark a to-do complete. Set completed to false to reopen it; reopened items are appended to the active priority list.',
+    description: 'Mark a to-do complete. Set completed to false to reopen it; reopened items return to the active date-ordered list.',
     inputSchema: {
       type: 'object',
       properties: {
