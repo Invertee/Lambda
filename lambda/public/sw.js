@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lambda-shell-v18';
+const CACHE_NAME = 'lambda-shell-v19';
 const SHELL = [
   './',
   './index.html',
