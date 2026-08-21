@@ -17,7 +17,7 @@
 
 .todo-create-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(390px, auto) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(500px, auto) auto;
   gap: 10px;
   align-items: end;
   padding: 18px;
@@ -39,14 +39,15 @@
 
 .todo-create-form input,
 .todo-title-input,
-.todo-subtask-title {
+.todo-subtask-title,
+.todo-custom-due-input {
   border: 1px solid var(--line);
   outline: 0;
   color: var(--ink);
   background: var(--surface);
 }
 
-.todo-create-form input:not([type="hidden"]) {
+.todo-create-form input {
   height: 42px;
   padding: 0 12px;
   border-radius: 9px;
@@ -54,9 +55,17 @@
 
 .todo-create-form input:focus,
 .todo-title-input:focus,
-.todo-subtask-title:focus {
+.todo-subtask-title:focus,
+.todo-custom-due-input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.todo-due-controls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
 }
 
 .todo-due-choices {
@@ -87,6 +96,25 @@
   color: var(--accent-dark);
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+.todo-custom-due-input {
+  width: 138px;
+  min-width: 138px;
+  height: 30px;
+  padding: 0 7px;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: .68rem;
+}
+
+.todo-create-form .todo-custom-due-input {
+  width: 145px;
+  min-width: 145px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 7px;
+  font-size: .7rem;
 }
 
 .todo-section {
@@ -241,6 +269,11 @@
   font-size: .64rem;
 }
 
+.todo-card .todo-custom-due-input {
+  height: 27px;
+  font-size: .64rem;
+}
+
 .todo-subtasks {
   display: grid;
   gap: 5px;
@@ -392,7 +425,7 @@
   color: #858c9b;
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 1180px) {
   .todo-create-form {
     grid-template-columns: 1fr;
   }
@@ -406,6 +439,11 @@
   .todos-view {
     width: 100%;
     padding: 74px 22px 80px;
+  }
+
+  .todo-due-controls {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 
