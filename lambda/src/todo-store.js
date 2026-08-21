@@ -123,8 +123,18 @@ export class TodoStore {
     const order = completedOnly
       ? 'ORDER BY completed_at DESC, updated_at DESC'
       : includeCompleted
-        ? 'ORDER BY CASE WHEN completed_at IS NULL THEN 0 ELSE 1 END, CASE WHEN completed_at IS NULL THEN priority ELSE 0 END ASC, completed_at DESC, updated_at DESC'
-        : 'ORDER BY priority ASC, updated_at DESC';
+        ? `ORDER BY
+            CASE WHEN completed_at IS NULL THEN 0 ELSE 1 END,
+            CASE WHEN completed_at IS NULL AND due_date IS NULL THEN 1 ELSE 0 END,
+            CASE WHEN completed_at IS NULL THEN due_date ELSE NULL END ASC,
+            CASE WHEN completed_at IS NULL THEN priority ELSE 0 END ASC,
+            completed_at DESC,
+            updated_at DESC`
+        : `ORDER BY
+            CASE WHEN due_date IS NULL THEN 1 ELSE 0 END,
+            due_date ASC,
+            priority ASC,
+            updated_at DESC`;
     const todos = this.db.prepare(`SELECT * FROM todos ${where} ${order}`).all().map((row) => this.todoFromRow(row));
     const query = String(search || '').trim().toLocaleLowerCase();
     if (!query) return todos;
