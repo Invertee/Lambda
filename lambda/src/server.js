@@ -102,8 +102,8 @@ function withBlockTools(contents) {
   const html = contents.toString('utf8');
   if (html.includes('todo-tools.js')) return contents;
   return Buffer.from(html
-    .replace('</head>', '  <link rel="stylesheet" href="block-tools.css?v=1.3.6">\n  <link rel="stylesheet" href="todo-tools.css?v=1.3.6">\n</head>')
-    .replace('</body>', '  <script type="module" src="block-tools.js?v=1.3.6"></script>\n  <script type="module" src="todo-tools.js?v=1.3.6"></script>\n</body>'));
+    .replace('</head>', '  <link rel="stylesheet" href="block-tools.css?v=1.3.7">\n  <link rel="stylesheet" href="todo-tools.css?v=1.3.7">\n</head>')
+    .replace('</body>', '  <script type="module" src="block-tools.js?v=1.3.7"></script>\n  <script type="module" src="todo-tools.js?v=1.3.7"></script>\n</body>'));
 }
 
 function serveFile(response, filename) {
