@@ -107,18 +107,21 @@ function ensureUi() {
   if (!filterNav || !workspace || !offlineBanner) return false;
 
   if (!$('#todos-nav')) {
-    const button = document.createElement('button');
-    button.id = 'todos-nav';
-    button.type = 'button';
-    button.className = 'nav-item';
-    button.innerHTML = `
-      <span>
-        <svg viewBox="0 0 24 24"><circle cx="6.5" cy="7" r="2.5"/><path d="m5.4 7 1 1 2-2M11 7h8M5 14h14M5 18h10"/></svg>
-        To-Dos
-      </span>
-      <span id="todos-count" class="count">0</span>
+    const row = document.createElement('div');
+    row.className = 'nav-item-row';
+    row.innerHTML = `
+      <button id="todos-nav" type="button" class="nav-item">
+        <span>
+          <svg viewBox="0 0 24 24"><circle cx="6.5" cy="7" r="2.5"/><path d="m5.4 7 1 1 2-2M11 7h8M5 14h14M5 18h10"/></svg>
+          To-Dos
+        </span>
+        <span id="todos-count" class="count">0</span>
+      </button>
+      <button id="todos-create" class="nav-create-button" type="button" aria-label="Create new to-do" title="Create new to-do">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
     `;
-    filterNav.prepend(button);
+    filterNav.prepend(row);
   }
 
   if (!$('#todos-view')) {
@@ -129,7 +132,6 @@ function ensureUi() {
       <header class="page-header todos-header">
         <p class="eyebrow">TASKS</p>
         <h1>To-Dos</h1>
-        <p>Track active work, due dates, and smaller steps without mixing tasks into your notes.</p>
       </header>
 
       <form id="todo-create-form" class="todo-create-form">
@@ -183,7 +185,7 @@ function ensureUi() {
 }
 
 function mainViews() {
-  return ['#empty-state', '#library-view', '#note-editor', '#trash-view']
+  return ['#empty-state', '#library-view', '#note-editor', '#trash-view', '#search-results-view', '#bookmarks-view', '#tag-results-view']
     .map((selector) => $(selector))
     .filter(Boolean);
 }
@@ -198,6 +200,7 @@ function hideTodoView() {
 
 async function showTodoView() {
   mainViews().forEach((view) => view.classList.add('hidden'));
+  $('#bookmarks-nav')?.classList.remove('active');
   $('#todos-view').classList.remove('hidden');
   $('#todos-nav').classList.add('active');
   state.showing = true;
@@ -347,7 +350,7 @@ function renderTodos() {
   } else {
     const empty = document.createElement('div');
     empty.className = 'todo-empty';
-    empty.innerHTML = '<strong>Nothing active</strong><span>Add a to-do above or enjoy the clear list.</span>';
+    empty.innerHTML = '<strong>Nothing active</strong>';
     $('#active-todos-list').replaceChildren(empty);
   }
 
@@ -542,11 +545,12 @@ async function handleTodoClick(event) {
   }
 
   if (event.target.closest('[data-delete-todo]') && card) {
-    if (!window.confirm('Delete this to-do permanently?')) return;
+    if (!window.confirm('Move this to-do to the recycle bin?')) return;
     try {
       await api(`todos/${id}`, { method: 'DELETE' });
       state.todos = state.todos.filter((todo) => todo.id !== id);
       renderTodos();
+      window.dispatchEvent(new CustomEvent('lambda:trash-changed', { detail: { type: 'todo', id } }));
     } catch (error) {
       window.alert(error.message || 'To-do could not be deleted.');
     }
@@ -633,6 +637,14 @@ function wire() {
   if (!ensureUi()) return;
 
   $('#todos-nav').addEventListener('click', showTodoView);
+  $('#todos-create').addEventListener('click', async () => {
+    await showTodoView();
+    $('#todo-create-title').focus();
+  });
+  $('#sidebar-brand').addEventListener('click', (event) => {
+    event.preventDefault();
+    showTodoView();
+  });
   $('#todo-create-form').addEventListener('submit', createTodo);
   $('#todos-view').addEventListener('change', handleTodoChange);
   $('#todos-view').addEventListener('click', handleTodoClick);
@@ -652,6 +664,15 @@ function wire() {
     if (state.completedExpanded && !state.completedLoaded) await refreshCompletedTodos();
   });
   $('#clear-completed-todos').addEventListener('click', clearCompleted);
+  window.addEventListener('lambda:open-todo', async (event) => {
+    const id = event.detail?.id;
+    if (!id) return;
+    const todo = await api('todos?include_completed=1').then((items) => items.find((item) => item.id === id)).catch(() => null);
+    if (todo?.completed) state.completedExpanded = true;
+    await showTodoView();
+    if (todo?.completed) await refreshCompletedTodos();
+    requestAnimationFrame(() => $(`[data-todo-id="${id}"] [data-todo-title]`)?.focus());
+  });
 
   const viewObserver = new MutationObserver(() => {
     if (!state.showing) return;

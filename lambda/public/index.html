@@ -11,8 +11,8 @@
   <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
+  <link href="https://fonts.googleapis.com/css2?family=Offside&family=Quicksand:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=1.3.11">
 </head>
 <body>
   <div id="login-view" class="login-view hidden">
@@ -42,20 +42,16 @@
     <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
     <aside id="sidebar" class="sidebar">
       <div class="brand-row">
-        <div class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32"><path d="M8 6h2.5c1.8 0 2.8 1 3.6 3l6.4 17M15.3 12.2 9.5 26"/></svg>
-        </div>
-        <div><strong>Lambda</strong></div>
+        <a id="sidebar-brand" class="brand-link" href="#todos" aria-label="Open To-Dos">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32"><path d="M8 6h2.5c1.8 0 2.8 1 3.6 3l6.4 17M15.3 12.2 9.5 26"/></svg>
+          </div>
+          <div><strong class="brand-title">Lambda</strong></div>
+        </a>
         <button id="close-sidebar" class="icon-button sidebar-close" aria-label="Close navigation">
           <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>
         </button>
       </div>
-
-      <button id="new-note" class="primary-button new-note-button">
-        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-        New note
-        <kbd>N</kbd>
-      </button>
 
       <label class="search-box" for="search">
         <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
@@ -65,10 +61,15 @@
 
       <div class="sidebar-scroll">
         <nav class="filter-nav" aria-label="Note filters">
-          <button class="nav-item active" data-filter="all">
-            <span><svg viewBox="0 0 24 24"><path d="M6 3.5h9l4 4v13H6z"/><path d="M15 3.5v4h4M9 12h7M9 16h7"/></svg>All notes</span>
-            <span id="all-count" class="count">0</span>
-          </button>
+          <div class="nav-item-row">
+            <button class="nav-item active" data-filter="all">
+              <span><svg viewBox="0 0 24 24"><path d="M6 3.5h9l4 4v13H6z"/><path d="M15 3.5v4h4M9 12h7M9 16h7"/></svg>Notes</span>
+              <span id="all-count" class="count">0</span>
+            </button>
+            <button id="notes-create" class="nav-create-button" type="button" aria-label="Create new note" title="Create new note">
+              <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+          </div>
         </nav>
 
         <div class="nav-section-heading">
@@ -122,7 +123,7 @@
         <div class="empty-illustration" aria-hidden="true">
           <svg viewBox="0 0 120 120"><path d="M31 19h45l18 18v64H31z"/><path d="M76 19v19h18M44 54h36M44 66h29M44 78h33"/><circle cx="92" cy="91" r="18"/><path d="M92 83v16M84 91h16"/></svg>
         </div>
-        <p class="eyebrow">A CLEAR PLACE TO THINK</p>
+        <p class="eyebrow"></p>
         <h1>Your library starts here</h1>
         <p>Create a note, save a command, or collect the fragments you always need again.</p>
         <button id="empty-new-note" class="primary-button">Create your first note</button>
@@ -189,7 +190,7 @@
         <header class="page-header">
           <p class="eyebrow">RECYCLE BIN</p>
           <h1>Recently deleted</h1>
-          <p>Restore notes to your library or remove them permanently.</p>
+          <p>Restore notes, to-dos, and bookmarks or remove them permanently.</p>
         </header>
         <div id="trash-list" class="trash-list"></div>
       </section>
@@ -262,7 +263,7 @@
       </div>
       <div class="settings-row-text">
         <strong>Backup your data</strong>
-        <span>Export all notes, recycled notes, categories, tags and version history as JSON.</span>
+        <span>Export notes, bookmarks, tags, categories and version history as JSON.</span>
       </div>
       <button id="export-backup" class="primary-button" type="button">Export backup</button>
     </div>
@@ -272,7 +273,7 @@
       </div>
       <div class="settings-row-text">
         <strong>Restore your data</strong>
-        <span>Import a Lambda backup. This replaces all current notes, recycled notes, categories, tags and version history.</span>
+        <span>Import a Lambda backup. This replaces notes, bookmarks, tags, categories and version history.</span>
       </div>
       <button id="import-backup" class="secondary-button" type="button">Import backup</button>
     </div>

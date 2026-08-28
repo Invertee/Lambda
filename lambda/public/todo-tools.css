@@ -1,5 +1,5 @@
 .todos-view {
-  width: min(100%, 1176px);
+  width: min(100%, var(--content-width));
   margin: 0 auto;
   padding: 34px 58px 100px;
 }
@@ -111,10 +111,14 @@
 .todo-create-form .todo-custom-due-input {
   width: 145px;
   min-width: 145px;
-  height: 32px;
+  height: 42px;
   padding: 0 8px;
   border-radius: 7px;
   font-size: .7rem;
+}
+
+.todo-create-form .todo-due-choice {
+  min-height: 42px;
 }
 
 .todo-section {

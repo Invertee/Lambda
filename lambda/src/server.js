@@ -1,4 +1,6 @@
 import http from 'node:http';
+import { lookup } from 'node:dns/promises';
+import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -9,7 +11,8 @@ import { SnippetDatabase } from './database.js';
 import { EncryptionVault } from './encryption.js';
 import { createLambdaMcpNodeHandler } from './mcp.js';
 import { TodoStore } from './todo-store.js';
-import { ValidationError, validateBackup, validateBlockCode, validateCategoryName, validateNote, validateTodo } from './validation.js';
+import { BookmarkStore } from './bookmark-store.js';
+import { ValidationError, validateBackup, validateBlockCode, validateBookmark, validateCategoryName, validateNote, validateTodo } from './validation.js';
 
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MAX_BODY_BYTES = 12 * 1024 * 1024;
@@ -25,7 +28,7 @@ const MIME_TYPES = {
 
 function securityHeaders() {
   return {
-    'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'",
+    'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'",
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'SAMEORIGIN',
@@ -102,8 +105,8 @@ function withBlockTools(contents) {
   const html = contents.toString('utf8');
   if (html.includes('todo-tools.js')) return contents;
   return Buffer.from(html
-    .replace('</head>', '  <link rel="stylesheet" href="block-tools.css?v=1.3.7">\n  <link rel="stylesheet" href="todo-tools.css?v=1.3.7">\n</head>')
-    .replace('</body>', '  <script type="module" src="block-tools.js?v=1.3.7"></script>\n  <script type="module" src="todo-tools.js?v=1.3.7"></script>\n</body>'));
+    .replace('</head>', '  <link rel="stylesheet" href="block-tools.css?v=1.3.8">\n  <link rel="stylesheet" href="todo-tools.css?v=1.3.8">\n  <link rel="stylesheet" href="bookmark-tools.css?v=1.3.8">\n</head>')
+    .replace('</body>', '  <script type="module" src="block-tools.js?v=1.3.7"></script>\n  <script type="module" src="todo-tools.js?v=1.3.7"></script>\n  <script type="module" src="bookmark-tools.js?v=1.3.8"></script>\n</body>'));
 }
 
 function serveFile(response, filename) {
@@ -142,6 +145,65 @@ function normalizedTodoInput(body, current = null) {
   });
 }
 
+function bookmarkFallbackTitle(url) {
+  try { return new URL(url).hostname.replace(/^www\./i, '') || 'Untitled bookmark'; }
+  catch { return 'Untitled bookmark'; }
+}
+
+function isPrivateAddress(address) {
+  if (net.isIPv4(address)) {
+    const [a, b] = address.split('.').map(Number);
+    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224;
+  }
+  const value = String(address).toLowerCase();
+  return value === '::1' || value === '::' || value.startsWith('fc') || value.startsWith('fd') || value.startsWith('fe8') || value.startsWith('fe9') || value.startsWith('fea') || value.startsWith('feb');
+}
+
+async function assertPublicUrl(value) {
+  const parsed = new URL(value);
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host.endsWith('.localhost') || isPrivateAddress(host)) throw new ValidationError('URLs on local or private networks cannot be fetched.');
+  const addresses = await lookup(host, { all: true });
+  if (!addresses.length || addresses.some((entry) => isPrivateAddress(entry.address))) throw new ValidationError('URLs on local or private networks cannot be fetched.');
+  return parsed;
+}
+
+function titleFromHtml(html) {
+  const match = String(html).match(/<title[^>]*>([\s\S]*?)<\/title\s*>/i);
+  return match?.[1]?.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 300) || '';
+}
+
+export async function fetchBookmarkTitle(value) {
+  let current = String(value);
+  for (let redirects = 0; redirects <= 3; redirects += 1) {
+    await assertPublicUrl(current);
+    const response = await fetch(current, { redirect: 'manual', signal: AbortSignal.timeout(8_000), headers: { Accept: 'text/html,application/xhtml+xml', 'User-Agent': 'Lambda Bookmarks/1.0' } });
+    if (response.status >= 300 && response.status < 400 && response.headers.get('location')) { current = new URL(response.headers.get('location'), current).toString(); continue; }
+    if (!response.ok) throw new Error(`The page returned ${response.status}.`);
+    const length = Number(response.headers.get('content-length') || 0);
+    if (length > 1_000_000) throw new Error('The page is too large to read a title from.');
+    const reader = response.body?.getReader();
+    const chunks = [];
+    let size = 0;
+    while (reader) {
+      const { done, value: chunk } = await reader.read();
+      if (done) break;
+      size += chunk.length;
+      if (size > 1_000_000) { await reader.cancel(); throw new Error('The page is too large to read a title from.'); }
+      chunks.push(chunk);
+    }
+    return titleFromHtml(new TextDecoder().decode(Buffer.concat(chunks))) || bookmarkFallbackTitle(current);
+  }
+  throw new Error('The page redirected too many times.');
+}
+
+function normalizedBookmarkInput(body, current = null, title = '') {
+  const has = (key) => Object.hasOwn(body, key);
+  const requestedTitle = has('title') ? String(body.title || '').trim() : '';
+  return validateBookmark({ url: has('url') ? body.url : current?.url, title: requestedTitle || current?.title || title, tags: has('tags') ? body.tags : (current?.tags || []) });
+}
+
 function todoSummaryDate(value) {
   const date = String(value || '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
@@ -167,6 +229,8 @@ export function createApp(customConfig = {}) {
   const encryption = customConfig.encryption || new EncryptionVault(config.password, encryptionKeyPath);
   const database = customConfig.database || new SnippetDatabase(config.dbPath, encryption);
   const todos = customConfig.todos || new TodoStore(database.db, encryption);
+  const bookmarks = customConfig.bookmarks || new BookmarkStore(database.db, encryption);
+  const bookmarkTitleFetcher = customConfig.bookmarkTitleFetcher || fetchBookmarkTitle;
   const auth = new AuthManager(config.password, config.sessionDays, database.sessions);
   const mcpHandler = createLambdaMcpNodeHandler(database, todos);
 
@@ -232,18 +296,24 @@ export function createApp(customConfig = {}) {
       if (sessionToken) response.setHeader('Set-Cookie', auth.cookie(sessionToken, request, config.cookieSecure));
 
       if (pathname === '/api/bootstrap' && request.method === 'GET') {
+        const trash = [
+          ...database.listNotes({ deleted: true }).map((note) => ({ ...note, type: 'note' })),
+          ...todos.listTodos({ deletedOnly: true }).map((todo) => ({ ...todo, type: 'todo' })),
+          ...bookmarks.listBookmarks({ deletedOnly: true }).map((bookmark) => ({ ...bookmark, type: 'bookmark' })),
+        ].sort((left, right) => String(right.deletedAt || '').localeCompare(String(left.deletedAt || '')));
         return json(response, 200, {
           notes: database.listNotes(),
-          trash: database.listNotes({ deleted: true }),
+          trash,
           categories: database.listCategories(),
           todos: todos.listTodos(),
+          bookmarks: bookmarks.listBookmarks(),
           cachedAt: new Date().toISOString(),
         });
       }
 
       if (pathname === '/api/backup' && request.method === 'GET') {
         const date = new Date().toISOString().slice(0, 10);
-        return json(response, 200, { ...database.exportBackup(), todos: todos.exportBackup() }, {
+        return json(response, 200, { ...database.exportBackup(), todos: todos.exportBackup(), bookmarks: bookmarks.exportBackup() }, {
           'Content-Disposition': downloadFilename(`lambda-backup-${date}.json`),
         });
       }
@@ -252,7 +322,8 @@ export function createApp(customConfig = {}) {
         const backup = validateBackup(await readJsonObject(request));
         const restored = database.restoreBackup(backup);
         const restoredTodos = todos.restoreBackup(backup.todos);
-        return json(response, 200, { ...restored, todos: restoredTodos });
+        const restoredBookmarks = bookmarks.restoreBackup(backup.bookmarks);
+        return json(response, 200, { ...restored, todos: restoredTodos, ...restoredBookmarks });
       }
 
       if (pathname === '/api/attachments' && request.method === 'POST') {
@@ -338,6 +409,8 @@ export function createApp(customConfig = {}) {
         return json(response, 200, todos.listTodos({
           includeCompleted: url.searchParams.get('include_completed') === '1',
           completedOnly: url.searchParams.get('completed') === '1',
+          includeDeleted: url.searchParams.get('include_deleted') === '1',
+          deletedOnly: url.searchParams.get('trash') === '1',
           search: url.searchParams.get('q') || '',
         }));
       }
@@ -349,6 +422,42 @@ export function createApp(customConfig = {}) {
 
       if (pathname === '/api/todos/completed' && request.method === 'DELETE') {
         return json(response, 200, { deleted: todos.clearCompleted() });
+      }
+
+      if (pathname === '/api/bookmarks' && request.method === 'GET') {
+        return json(response, 200, bookmarks.listBookmarks({
+          tag: url.searchParams.get('tag') || '',
+          search: url.searchParams.get('q') || '',
+          includeDeleted: url.searchParams.get('include_deleted') === '1',
+          deletedOnly: url.searchParams.get('trash') === '1',
+        }));
+      }
+      if (pathname === '/api/bookmarks' && request.method === 'POST') {
+        const body = await readJsonObject(request);
+        const preliminary = validateBookmark({ ...body, title: String(body.title || '').trim() || 'Untitled bookmark' });
+        let title = String(body.title || '').trim();
+        if (!title) title = await bookmarkTitleFetcher(preliminary.url);
+        return json(response, 201, bookmarks.createBookmark(normalizedBookmarkInput({ ...body, url: preliminary.url }, null, title)));
+      }
+      const bookmarkMatch = pathname.match(/^\/api\/bookmarks\/([a-f0-9-]+)$/i);
+      if (bookmarkMatch && request.method === 'GET') {
+        const bookmark = bookmarks.getBookmark(bookmarkMatch[1]);
+        return bookmark ? json(response, 200, bookmark) : json(response, 404, { error: 'Bookmark not found.' });
+      }
+      if (bookmarkMatch && ['PATCH', 'PUT'].includes(request.method)) {
+        const current = bookmarks.getBookmark(bookmarkMatch[1]);
+        if (!current) return json(response, 404, { error: 'Bookmark not found.' });
+        return json(response, 200, bookmarks.updateBookmark(bookmarkMatch[1], normalizedBookmarkInput(await readJsonObject(request), current)));
+      }
+      if (bookmarkMatch && request.method === 'DELETE') {
+        return bookmarks.deleteBookmark(bookmarkMatch[1]) ? empty(response) : json(response, 404, { error: 'Bookmark not found.' });
+      }
+      const bookmarkActionMatch = pathname.match(/^\/api\/bookmarks\/([a-f0-9-]+)\/(restore|permanent)$/i);
+      if (bookmarkActionMatch && bookmarkActionMatch[2] === 'restore' && request.method === 'POST') {
+        return bookmarks.restoreBookmark(bookmarkActionMatch[1]) ? json(response, 200, bookmarks.getBookmark(bookmarkActionMatch[1])) : json(response, 404, { error: 'Deleted bookmark not found.' });
+      }
+      if (bookmarkActionMatch && bookmarkActionMatch[2] === 'permanent' && request.method === 'DELETE') {
+        return bookmarks.permanentlyDeleteBookmark(bookmarkActionMatch[1]) ? empty(response) : json(response, 404, { error: 'Deleted bookmark not found.' });
       }
 
       const todoMatch = pathname.match(/^\/api\/todos\/([a-f0-9-]+)$/i);
@@ -369,6 +478,13 @@ export function createApp(customConfig = {}) {
       }
       if (todoMatch && request.method === 'DELETE') {
         return todos.deleteTodo(todoMatch[1]) ? empty(response) : json(response, 404, { error: 'To-do not found.' });
+      }
+      const todoActionMatch = pathname.match(/^\/api\/todos\/([a-f0-9-]+)\/(restore|permanent)$/i);
+      if (todoActionMatch && todoActionMatch[2] === 'restore' && request.method === 'POST') {
+        return todos.restoreTodo(todoActionMatch[1]) ? json(response, 200, todos.getTodo(todoActionMatch[1])) : json(response, 404, { error: 'Deleted to-do not found.' });
+      }
+      if (todoActionMatch && todoActionMatch[2] === 'permanent' && request.method === 'DELETE') {
+        return todos.permanentlyDeleteTodo(todoActionMatch[1]) ? empty(response) : json(response, 404, { error: 'Deleted to-do not found.' });
       }
 
       if (pathname === '/api/notes' && request.method === 'GET') {

@@ -55,6 +55,7 @@ let editGeneration = 0;
 let savedGeneration = 0;
 let draggedBlockId = null;
 let confirmResolver = null;
+let searchGeneration = 0;
 
 function apiUrl(path = '') {
   return new URL(`api/${path.replace(/^\//, '')}`, APP_BASE);
@@ -103,7 +104,7 @@ async function importBackup(file) {
     }
     const accepted = await confirmAction(
       'Replace all Lambda data?',
-      'Importing this backup will permanently replace every current note, recycled note, category, tag and version. This cannot be undone.',
+      'Importing this backup will permanently replace every current note, bookmark, recycled note, category, tag and version. This cannot be undone.',
       'Import and replace',
     );
     if (!accepted) return;
@@ -201,6 +202,16 @@ function applySnapshot(snapshot) {
   state.categories = snapshot.categories || [];
 }
 
+async function refreshTrash() {
+  try {
+    const snapshot = await api('bootstrap');
+    state.trash = snapshot.trash || [];
+    await cacheSnapshot(snapshot);
+    renderSidebar();
+    if (state.view === 'trash') renderTrash();
+  } catch {}
+}
+
 function showLogin(message = '') {
   clearTimeout(saveTimer);
   $('#app-shell').classList.add('hidden');
@@ -257,7 +268,7 @@ function updateConnectionUi() {
   $('#offline-banner').classList.toggle('hidden', !state.offline);
   $('#connection-icon').classList.toggle('offline', state.offline);
   $('#connection-text').textContent = state.offline ? 'Offline copy' : 'Synced';
-  $('#new-note').disabled = state.offline;
+  $('#notes-create').disabled = state.offline;
   $('#mobile-new-note').disabled = state.offline;
   $('#empty-new-note').disabled = state.offline;
   $('#manage-categories').disabled = state.offline;
@@ -301,6 +312,89 @@ function filteredNotes() {
     if (state.filter.type === 'tag' && !note.tags.includes(state.filter.value)) return false;
     return true;
   });
+}
+
+function ensureSearchResultsView() {
+  let view = $('#search-results-view');
+  if (view) return view;
+  view = document.createElement('section');
+  view.id = 'search-results-view';
+  view.className = 'search-results-view hidden';
+  view.innerHTML = `
+    <header class="page-header">
+      <p class="eyebrow">SEARCH</p>
+      <h1>Search results</h1>
+      <p id="search-results-summary"></p>
+    </header>
+    <div id="search-results-list" class="search-results-list"></div>`;
+  $('#offline-banner').insertAdjacentElement('afterend', view);
+  return view;
+}
+
+function searchResult(type, item) {
+  const card = document.createElement('button');
+  card.type = 'button';
+  card.className = 'search-result-card';
+  card.dataset.searchResultType = type;
+  card.dataset.searchResultId = item.id;
+  const label = document.createElement('span');
+  label.className = 'search-result-type';
+  label.textContent = type === 'note' ? 'Note' : type === 'todo' ? 'To-do' : 'Bookmark';
+  const title = document.createElement('strong');
+  title.textContent = item.title || (type === 'note' ? 'Untitled note' : 'Untitled');
+  const detail = document.createElement('span');
+  detail.className = 'search-result-detail';
+  if (type === 'note') detail.textContent = notePreview(item);
+  else if (type === 'todo') detail.textContent = item.subtasks?.length ? `${item.subtasks.length} step${item.subtasks.length === 1 ? '' : 's'}${item.completed ? ' · completed' : ''}` : (item.completed ? 'Completed' : 'Active');
+  else detail.textContent = item.url;
+  card.append(label, title, detail);
+  return card;
+}
+
+function renderSearchResults(query, notes, todos, bookmarks) {
+  const view = ensureSearchResultsView();
+  const total = notes.length + todos.length + bookmarks.length;
+  $('#search-results-summary').textContent = `${total} result${total === 1 ? '' : 's'} matching “${query}”.`;
+  const results = [
+    ...notes.map((item) => searchResult('note', item)),
+    ...todos.map((item) => searchResult('todo', item)),
+    ...bookmarks.map((item) => searchResult('bookmark', item)),
+  ];
+  $('#search-results-list').replaceChildren(...(results.length ? results : [Object.assign(document.createElement('p'), { className: 'search-results-empty', textContent: 'No notes, to-dos, or bookmarks match this search.' })]));
+  ['#empty-state', '#library-view', '#note-editor', '#trash-view', '#todos-view', '#bookmarks-view', '#tag-results-view'].forEach((selector) => $(selector)?.classList.add('hidden'));
+  view.classList.remove('hidden');
+}
+
+async function showSearchResults() {
+  const query = state.search.trim();
+  if (!query) return showLibrary();
+  if (await saveNow() === false) return;
+  const generation = ++searchGeneration;
+  const view = ensureSearchResultsView();
+  $('#search-results-summary').textContent = 'Searching notes, to-dos, and bookmarks…';
+  $('#search-results-list').replaceChildren();
+  ['#empty-state', '#library-view', '#note-editor', '#trash-view', '#todos-view', '#bookmarks-view', '#tag-results-view'].forEach((selector) => $(selector)?.classList.add('hidden'));
+  view.classList.remove('hidden');
+  state.currentNote = null;
+  state.selectedId = null;
+  state.view = 'library';
+  renderSidebar();
+  try {
+    const [todoResult, bookmarkResult] = await Promise.allSettled([
+      api(`todos?include_completed=1&q=${encodeURIComponent(query)}`),
+      api(`bookmarks?q=${encodeURIComponent(query)}`),
+    ]);
+    if (generation !== searchGeneration || query !== state.search.trim()) return;
+    renderSearchResults(
+      query,
+      filteredNotes(),
+      todoResult.status === 'fulfilled' ? todoResult.value : [],
+      bookmarkResult.status === 'fulfilled' ? bookmarkResult.value : [],
+    );
+  } catch (error) {
+    if (generation !== searchGeneration) return;
+    $('#search-results-summary').textContent = error.message || 'Search results could not be loaded.';
+  }
 }
 
 function renderSidebar() {
@@ -454,6 +548,7 @@ async function showLibrary({ skipSave = false } = {}) {
   $('#note-editor').classList.add('hidden');
   $('#trash-view').classList.add('hidden');
   $('#empty-state').classList.add('hidden');
+  $('#search-results-view')?.classList.add('hidden');
   $('#library-view').classList.remove('hidden');
   renderLibrary();
   renderSidebar();
@@ -876,28 +971,39 @@ function renderTrash() {
     container.replaceChildren(empty);
     return;
   }
-  container.replaceChildren(...state.trash.map((note) => {
+  container.replaceChildren(...state.trash.map((item) => {
+    const type = item.type || (item.url ? 'bookmark' : item.subtasks ? 'todo' : 'note');
     const card = document.createElement('article');
     card.className = 'trash-card';
+    card.dataset.trashType = type;
+    card.dataset.trashId = item.id;
     const icon = document.createElement('div');
     icon.className = 'trash-card-icon';
-    icon.innerHTML = icons.file;
+    icon.innerHTML = type === 'bookmark' ? icons.attachment : type === 'todo' ? icons.restore : icons.file;
     const text = document.createElement('div');
     text.className = 'trash-card-text';
     const title = document.createElement('h3');
-    title.textContent = note.title;
+    title.textContent = item.title || (type === 'bookmark' ? item.url : 'Untitled');
     const meta = document.createElement('p');
-    meta.textContent = `Deleted ${formatRelative(note.deletedAt)}${note.category ? ` · ${note.category}` : ''}`;
+    const label = type === 'note' ? item.category : type === 'todo' ? 'To-do' : 'Bookmark';
+    meta.textContent = `Deleted ${formatRelative(item.deletedAt)} · ${label || type}`;
     text.append(title, meta);
+    if (type === 'bookmark') {
+      const url = document.createElement('p');
+      url.textContent = item.url;
+      text.append(url);
+    }
     const actions = document.createElement('div');
     actions.className = 'trash-card-actions';
     const restore = document.createElement('button');
     restore.className = 'secondary-button';
-    restore.dataset.restoreNote = note.id;
+    restore.dataset.restoreTrash = type;
+    restore.dataset.trashId = item.id;
     restore.innerHTML = `${icons.restore} Restore`;
     const remove = document.createElement('button');
     remove.className = 'icon-button danger-hover';
-    remove.dataset.permanentNote = note.id;
+    remove.dataset.permanentTrash = type;
+    remove.dataset.trashId = item.id;
     remove.title = 'Delete permanently';
     remove.innerHTML = icons.trash;
     actions.append(restore, remove);
@@ -921,7 +1027,7 @@ async function deleteCurrentNote() {
     await api(`notes/${id}`, { method: 'DELETE' });
     const note = state.notes.find((item) => item.id === id);
     state.notes = state.notes.filter((item) => item.id !== id);
-    state.trash.unshift({ ...note, deletedAt: new Date().toISOString() });
+    state.trash.unshift({ ...note, type: 'note', deletedAt: new Date().toISOString() });
     await cacheSnapshot();
     renderSidebar();
     if (state.notes.length) selectNote(state.notes[0].id, { skipSave: true });
@@ -947,6 +1053,21 @@ async function restoreNote(id) {
   }
 }
 
+async function restoreTrashItem(type, id) {
+  if (state.offline) return;
+  if (type === 'note') return restoreNote(id);
+  try {
+    await api(`${type === 'todo' ? 'todos' : 'bookmarks'}/${id}/restore`, { method: 'POST' });
+    state.trash = state.trash.filter((item) => !(item.id === id && (item.type || (item.url ? 'bookmark' : item.subtasks ? 'todo' : 'note')) === type));
+    await cacheSnapshot();
+    renderTrash();
+    renderSidebar();
+    toast(`${type === 'todo' ? 'To-do' : 'Bookmark'} restored.`);
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
 async function permanentlyDeleteNote(id) {
   if (state.offline) return;
   const accepted = await confirmAction(
@@ -962,6 +1083,28 @@ async function permanentlyDeleteNote(id) {
     renderTrash();
     renderSidebar();
     toast('Note permanently deleted.');
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+async function permanentlyDeleteTrashItem(type, id) {
+  if (state.offline) return;
+  if (type === 'note') return permanentlyDeleteNote(id);
+  const label = type === 'todo' ? 'to-do' : 'bookmark';
+  const accepted = await confirmAction(
+    `Delete this ${label} permanently?`,
+    'This cannot be undone.',
+    'Delete forever',
+  );
+  if (!accepted) return;
+  try {
+    await api(`${type === 'todo' ? 'todos' : 'bookmarks'}/${id}/permanent`, { method: 'DELETE' });
+    state.trash = state.trash.filter((item) => !(item.id === id && (item.type || (item.url ? 'bookmark' : item.subtasks ? 'todo' : 'note')) === type));
+    await cacheSnapshot();
+    renderTrash();
+    renderSidebar();
+    toast(`${type === 'todo' ? 'To-do' : 'Bookmark'} permanently deleted.`);
   } catch (error) {
     toast(error.message, 'error');
   }
@@ -1240,10 +1383,11 @@ function wireEvents() {
     $('#toggle-password').setAttribute('aria-label', input.type === 'password' ? 'Show password' : 'Hide password');
   });
 
-  ['#new-note', '#mobile-new-note', '#empty-new-note'].forEach((selector) => $(selector).addEventListener('click', showNewNoteDialog));
+  ['#notes-create', '#mobile-new-note', '#empty-new-note'].forEach((selector) => $(selector).addEventListener('click', showNewNoteDialog));
   $('#delete-note').addEventListener('click', deleteCurrentNote);
   $('#versions-button').addEventListener('click', showVersions);
   $('#trash-nav').addEventListener('click', showTrash);
+  window.addEventListener('lambda:trash-changed', refreshTrash);
   $('#settings-nav').addEventListener('click', () => {
     closeSidebar();
     $('#settings-dialog').showModal();
@@ -1290,10 +1434,20 @@ function wireEvents() {
     else if (tag) setFilter('tag', tag.dataset.libraryTag);
   });
 
+  document.addEventListener('click', (event) => {
+    const result = event.target.closest('[data-search-result-type]');
+    if (!result) return;
+    const { searchResultType: type, searchResultId: id } = result.dataset;
+    if (type === 'note') selectNote(id);
+    else if (type === 'todo') window.dispatchEvent(new CustomEvent('lambda:open-todo', { detail: { id } }));
+    else window.dispatchEvent(new CustomEvent('lambda:open-bookmark', { detail: { id } }));
+  });
+
   $('#search').addEventListener('input', async (event) => {
     state.search = event.target.value;
     if (state.search) state.filter = { type: 'all', value: null };
-    await showLibrary();
+    if (state.search.trim()) await showSearchResults();
+    else await showLibrary();
   });
 
   $('#note-title').addEventListener('input', (event) => {
@@ -1439,10 +1593,10 @@ function wireEvents() {
   });
 
   $('#trash-list').addEventListener('click', (event) => {
-    const restore = event.target.closest('[data-restore-note]');
-    const permanent = event.target.closest('[data-permanent-note]');
-    if (restore) restoreNote(restore.dataset.restoreNote);
-    if (permanent) permanentlyDeleteNote(permanent.dataset.permanentNote);
+    const restore = event.target.closest('[data-restore-trash]');
+    const permanent = event.target.closest('[data-permanent-trash]');
+    if (restore) restoreTrashItem(restore.dataset.restoreTrash, restore.dataset.trashId);
+    if (permanent) permanentlyDeleteTrashItem(permanent.dataset.permanentTrash, permanent.dataset.trashId);
   });
   $('#versions-list').addEventListener('click', (event) => {
     const button = event.target.closest('[data-restore-version]');

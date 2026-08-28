@@ -71,6 +71,28 @@ export function validateTodo(input) {
   };
 }
 
+export function validateBookmark(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new ValidationError('A bookmark object is required.');
+  }
+  const url = text(String(input.url || ''), 2_000, 'URL', { allowEmpty: false });
+  let parsed;
+  try { parsed = new URL(url); } catch { throw new ValidationError('URL must be valid.'); }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw new ValidationError('URL must use HTTP or HTTPS without credentials.');
+  }
+  const tags = Array.isArray(input.tags) ? input.tags : [];
+  const seenTags = new Set();
+  const normalizedTags = tags.map((tag) => text(tag, 40, 'Tag', { allowEmpty: false })).filter((tag) => {
+    const key = tag.toLocaleLowerCase();
+    if (seenTags.has(key)) return false;
+    seenTags.add(key);
+    return true;
+  });
+  if (normalizedTags.length > 20) throw new ValidationError('A bookmark can have at most 20 tags.');
+  return { url: parsed.toString(), title: text(String(input.title || ''), 300, 'Title', { allowEmpty: false }), tags: normalizedTags };
+}
+
 export function validateNote(input, { partial = false } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new ValidationError('A note object is required.');
@@ -211,6 +233,23 @@ export function validateBackup(input) {
     };
   });
 
+  const bookmarkIds = new Set();
+  const bookmarks = (Array.isArray(input.bookmarks) ? input.bookmarks : []).map((inputBookmark) => {
+    if (!inputBookmark || typeof inputBookmark !== 'object' || Array.isArray(inputBookmark)) throw new ValidationError('Every backup bookmark must be an object.');
+    const id = String(inputBookmark.id || '');
+    if (!/^[a-f0-9-]{1,100}$/i.test(id)) throw new ValidationError('A backup bookmark has an invalid ID.');
+    if (bookmarkIds.has(id.toLocaleLowerCase())) throw new ValidationError(`Duplicate bookmark ID: ${id}.`);
+    bookmarkIds.add(id.toLocaleLowerCase());
+    const bookmark = validateBookmark(inputBookmark);
+    return {
+      id,
+      ...bookmark,
+      createdAt: timestamp(inputBookmark.createdAt, 'Bookmark created date'),
+      updatedAt: timestamp(inputBookmark.updatedAt, 'Bookmark updated date'),
+      deletedAt: timestamp(inputBookmark.deletedAt, 'Bookmark deleted date', { nullable: true }),
+    };
+  });
+
   const todoIds = new Set();
   const todos = (Array.isArray(input.todos) ? input.todos : []).map((inputTodo) => {
     if (!inputTodo || typeof inputTodo !== 'object' || Array.isArray(inputTodo)) {
@@ -237,8 +276,9 @@ export function validateBackup(input) {
       completedAt: timestamp(inputTodo.completedAt, 'To-do completion date', { nullable: true }),
       createdAt: timestamp(inputTodo.createdAt, 'To-do created date'),
       updatedAt: timestamp(inputTodo.updatedAt, 'To-do updated date'),
+      deletedAt: timestamp(inputTodo.deletedAt, 'To-do deleted date', { nullable: true }),
     };
   });
 
-  return { format: 'lambda-backup', version: 1, categories, notes, todos };
+  return { format: 'lambda-backup', version: 1, categories, notes, bookmarks, todos };
 }

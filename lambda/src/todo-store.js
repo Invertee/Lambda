@@ -21,7 +21,8 @@ export class TodoStore {
         priority INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        completed_at TEXT
+        completed_at TEXT,
+        deleted_at TEXT
       );
     `);
 
@@ -29,10 +30,14 @@ export class TodoStore {
     if (!columns.some((column) => column.name === 'priority')) {
       this.db.exec('ALTER TABLE todos ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;');
     }
+    if (!columns.some((column) => column.name === 'deleted_at')) {
+      this.db.exec('ALTER TABLE todos ADD COLUMN deleted_at TEXT;');
+    }
 
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_todos_completed_priority ON todos(completed_at, priority, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_todos_completed_due ON todos(completed_at, due_date, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_todos_deleted_updated ON todos(deleted_at, updated_at DESC);
     `);
     this.ensureActivePriorities();
   }
@@ -41,7 +46,7 @@ export class TodoStore {
     const rows = this.db.prepare(`
       SELECT id, priority
       FROM todos
-      WHERE completed_at IS NULL
+      WHERE completed_at IS NULL AND deleted_at IS NULL
       ORDER BY
         CASE WHEN priority > 0 THEN 0 ELSE 1 END,
         priority ASC,
@@ -71,7 +76,7 @@ export class TodoStore {
   }
 
   nextActivePriority() {
-    const row = this.db.prepare('SELECT COALESCE(MAX(priority), 0) AS value FROM todos WHERE completed_at IS NULL').get();
+    const row = this.db.prepare('SELECT COALESCE(MAX(priority), 0) AS value FROM todos WHERE completed_at IS NULL AND deleted_at IS NULL').get();
     return Number(row?.value || 0) + 1;
   }
 
@@ -109,28 +114,34 @@ export class TodoStore {
       priority: Number(row.priority || 0),
       completed: Boolean(row.completed_at),
       completedAt: row.completed_at || null,
+      deletedAt: row.deleted_at || null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
   }
 
-  listTodos({ includeCompleted = false, completedOnly = false, search = '' } = {}) {
-    const where = completedOnly
-      ? 'WHERE completed_at IS NOT NULL'
-      : includeCompleted
-        ? ''
-        : 'WHERE completed_at IS NULL';
-    const order = completedOnly
-      ? 'ORDER BY completed_at DESC, updated_at DESC'
-      : includeCompleted
-        ? `ORDER BY
+  listTodos({ includeCompleted = false, completedOnly = false, includeDeleted = false, deletedOnly = false, search = '' } = {}) {
+    const conditions = [];
+    if (deletedOnly) conditions.push('deleted_at IS NOT NULL');
+    else if (!includeDeleted) conditions.push('deleted_at IS NULL');
+    if (!deletedOnly) {
+      if (completedOnly) conditions.push('completed_at IS NOT NULL');
+      else if (!includeCompleted) conditions.push('completed_at IS NULL');
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const order = deletedOnly
+      ? 'ORDER BY deleted_at DESC, updated_at DESC'
+      : completedOnly
+        ? 'ORDER BY completed_at DESC, updated_at DESC'
+        : includeCompleted
+          ? `ORDER BY
             CASE WHEN completed_at IS NULL THEN 0 ELSE 1 END,
             CASE WHEN completed_at IS NULL AND due_date IS NULL THEN 1 ELSE 0 END,
             CASE WHEN completed_at IS NULL THEN due_date ELSE NULL END ASC,
             CASE WHEN completed_at IS NULL THEN priority ELSE 0 END ASC,
             completed_at DESC,
-            updated_at DESC`
-        : `ORDER BY
+              updated_at DESC`
+          : `ORDER BY
             CASE WHEN due_date IS NULL THEN 1 ELSE 0 END,
             due_date ASC,
             priority ASC,
@@ -166,8 +177,9 @@ export class TodoStore {
     };
   }
 
-  getTodo(id) {
-    return this.todoFromRow(this.db.prepare('SELECT * FROM todos WHERE id = ?').get(String(id)));
+  getTodo(id, { includeDeleted = false } = {}) {
+    const deletedClause = includeDeleted ? '' : ' AND deleted_at IS NULL';
+    return this.todoFromRow(this.db.prepare(`SELECT * FROM todos WHERE id = ?${deletedClause}`).get(String(id)));
   }
 
   createTodo({ title, dueDate, subtasks, completed = false }) {
@@ -253,15 +265,28 @@ export class TodoStore {
   }
 
   deleteTodo(id) {
-    return this.db.prepare('DELETE FROM todos WHERE id = ?').run(String(id)).changes > 0;
+    const now = new Date().toISOString();
+    return this.db.prepare('UPDATE todos SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(now, now, String(id)).changes > 0;
+  }
+
+  restoreTodo(id) {
+    const current = this.getTodo(id, { includeDeleted: true });
+    if (!current?.deletedAt) return false;
+    const priority = current.completed ? current.priority : this.nextActivePriority();
+    return this.db.prepare('UPDATE todos SET deleted_at = NULL, priority = ?, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL')
+      .run(priority, new Date().toISOString(), String(id)).changes > 0;
+  }
+
+  permanentlyDeleteTodo(id) {
+    return this.db.prepare('DELETE FROM todos WHERE id = ? AND deleted_at IS NOT NULL').run(String(id)).changes > 0;
   }
 
   clearCompleted() {
-    return this.db.prepare('DELETE FROM todos WHERE completed_at IS NOT NULL').run().changes;
+    return this.db.prepare('DELETE FROM todos WHERE completed_at IS NOT NULL AND deleted_at IS NULL').run().changes;
   }
 
   exportBackup() {
-    return this.listTodos({ includeCompleted: true });
+    return this.listTodos({ includeCompleted: true, includeDeleted: true });
   }
 
   restoreBackup(todos = []) {
@@ -269,8 +294,8 @@ export class TodoStore {
     try {
       this.db.exec('DELETE FROM todos;');
       const insert = this.db.prepare(`
-        INSERT INTO todos (id, title, due_date, subtasks_json, priority, created_at, updated_at, completed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO todos (id, title, due_date, subtasks_json, priority, created_at, updated_at, completed_at, deleted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const todo of todos) {
         insert.run(
@@ -282,6 +307,7 @@ export class TodoStore {
           todo.createdAt,
           todo.updatedAt,
           todo.completedAt,
+          todo.deletedAt || null,
         );
       }
       this.db.exec('COMMIT');

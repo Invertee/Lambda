@@ -161,4 +161,34 @@ test('todo REST API defaults to active items in date order, exposes summaries, r
   const cleared = await fetch(`${base}/api/todos/completed`, { method: 'DELETE', headers }).then((response) => response.json());
   assert.equal(cleared.deleted, 1);
   assert.equal((await fetch(`${base}/api/todos?include_completed=1`, { headers }).then((response) => response.json())).length, 2);
+
+  const recycled = await fetch(`${base}/api/todos`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ title: 'Recycle through API', subtasks: [] }),
+  }).then((response) => response.json());
+  assert.equal((await fetch(`${base}/api/todos/${recycled.id}`, { method: 'DELETE', headers })).status, 204);
+  const trash = await fetch(`${base}/api/todos?trash=1`, { headers }).then((response) => response.json());
+  assert.equal(trash[0].id, recycled.id);
+  assert.equal((await fetch(`${base}/api/todos/${recycled.id}/restore`, { method: 'POST', headers })).status, 200);
+  assert.equal((await fetch(`${base}/api/todos`, { headers }).then((response) => response.json())).some((todo) => todo.id === recycled.id), true);
+  await fetch(`${base}/api/todos/${recycled.id}`, { method: 'DELETE', headers });
+  assert.equal((await fetch(`${base}/api/todos/${recycled.id}/permanent`, { method: 'DELETE', headers })).status, 204);
+});
+
+test('to-dos move to the recycle bin and can be restored or permanently deleted', () => {
+  const database = new SnippetDatabase(':memory:');
+  const todos = new TodoStore(database.db);
+  const todo = todos.createTodo(validateTodo({ title: 'Recycle me', subtasks: [] }));
+
+  assert.equal(todos.deleteTodo(todo.id), true);
+  assert.equal(todos.listTodos().length, 0);
+  assert.equal(todos.listTodos({ deletedOnly: true })[0].deletedAt !== null, true);
+  assert.equal(todos.restoreTodo(todo.id), true);
+  assert.equal(todos.listTodos()[0].id, todo.id);
+  assert.equal(todos.deleteTodo(todo.id), true);
+  assert.equal(todos.permanentlyDeleteTodo(todo.id), true);
+  assert.equal(todos.listTodos({ deletedOnly: true }).length, 0);
+
+  database.close();
 });

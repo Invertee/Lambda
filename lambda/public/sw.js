@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lambda-shell-v19';
+const CACHE_NAME = 'lambda-shell-v22';
 const SHELL = [
   './',
   './index.html',
@@ -8,6 +8,8 @@ const SHELL = [
   './block-tools.js',
   './todo-tools.css',
   './todo-tools.js',
+  './bookmark-tools.css',
+  './bookmark-tools.js',
   './icon-192.png',
   './icon-512.png',
   './manifest.webmanifest',
@@ -39,7 +41,7 @@ self.addEventListener('fetch', (event) => {
   }
 
   event.respondWith(
-    caches.match(event.request, { ignoreSearch: true }).then((cached) => {
+    caches.match(event.request).then((cached) => {
       const refreshed = fetch(event.request).then((response) => {
         if (response.ok) caches.open(CACHE_NAME).then((cache) => cache.put(event.request, response.clone()));
         return response;

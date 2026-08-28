@@ -66,6 +66,8 @@ export class SnippetDatabase {
       CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, title TEXT NOT NULL, category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL, blocks_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT);
       CREATE TABLE IF NOT EXISTS tags (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL COLLATE NOCASE UNIQUE);
       CREATE TABLE IF NOT EXISTS note_tags (note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE, PRIMARY KEY (note_id, tag_id));
+      CREATE TABLE IF NOT EXISTS bookmarks (id TEXT PRIMARY KEY, url TEXT NOT NULL, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT);
+      CREATE TABLE IF NOT EXISTS bookmark_tags (bookmark_id TEXT NOT NULL REFERENCES bookmarks(id) ON DELETE CASCADE, tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE, PRIMARY KEY (bookmark_id, tag_id));
       CREATE TABLE IF NOT EXISTS versions (id INTEGER PRIMARY KEY AUTOINCREMENT, note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, version_key TEXT NOT NULL, title TEXT NOT NULL, category TEXT, tags_json TEXT NOT NULL, blocks_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(note_id, version_key));
       CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS block_refs (
@@ -79,9 +81,15 @@ export class SnippetDatabase {
       CREATE INDEX IF NOT EXISTS idx_versions_note_created ON versions(note_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
       CREATE INDEX IF NOT EXISTS idx_block_refs_note ON block_refs(note_id, active);
+      CREATE INDEX IF NOT EXISTS idx_bookmarks_updated ON bookmarks(updated_at DESC);
       INSERT OR IGNORE INTO categories (name, created_at) VALUES ('General', datetime('now'));
       UPDATE notes SET category_id = (SELECT id FROM categories WHERE name = 'General' COLLATE NOCASE) WHERE category_id IS NULL;
     `);
+    const bookmarkColumns = this.db.prepare('PRAGMA table_info(bookmarks)').all();
+    if (!bookmarkColumns.some((column) => column.name === 'deleted_at')) {
+      this.db.exec('ALTER TABLE bookmarks ADD COLUMN deleted_at TEXT;');
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_bookmarks_deleted_updated ON bookmarks(deleted_at, updated_at DESC);');
     this.rebuildBlockRefs();
   }
 
@@ -178,7 +186,7 @@ export class SnippetDatabase {
     const getTag = this.db.prepare('SELECT id FROM tags WHERE name = ? COLLATE NOCASE');
     const linkTag = this.db.prepare('INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?, ?)');
     for (const tag of tags) { insertTag.run(tag); linkTag.run(noteId, getTag.get(tag).id); }
-    this.db.exec('DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM note_tags)');
+    this.db.exec('DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM note_tags UNION SELECT DISTINCT tag_id FROM bookmark_tags)');
   }
 
   generateBlockCode() {
