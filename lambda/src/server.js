@@ -436,7 +436,14 @@ export function createApp(customConfig = {}) {
         const body = await readJsonObject(request);
         const preliminary = validateBookmark({ ...body, title: String(body.title || '').trim() || 'Untitled bookmark' });
         let title = String(body.title || '').trim();
-        if (!title) title = await bookmarkTitleFetcher(preliminary.url);
+        if (!title) {
+          try {
+            title = await bookmarkTitleFetcher(preliminary.url);
+          } catch (error) {
+            console.warn(`Could not fetch bookmark title for ${preliminary.url}: ${error.message}`);
+            title = bookmarkFallbackTitle(preliminary.url);
+          }
+        }
         return json(response, 201, bookmarks.createBookmark(normalizedBookmarkInput({ ...body, url: preliminary.url }, null, title)));
       }
       const bookmarkMatch = pathname.match(/^\/api\/bookmarks\/([a-f0-9-]+)$/i);

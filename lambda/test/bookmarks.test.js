@@ -56,3 +56,30 @@ test('bookmark API fetches a title and includes bookmarks in backups', async (co
   const afterRestore = await fetch(`${base}/api/bookmarks`, { headers: { cookie } }).then((response) => response.json());
   assert.equal(afterRestore[0].title, 'A better title');
 });
+
+test('bookmark API saves the URL when title fetching fails', async (context) => {
+  const database = new SnippetDatabase(':memory:');
+  const app = createApp({
+    database,
+    password: 'bookmark fallback password',
+    host: '127.0.0.1',
+    port: 0,
+    bookmarkTitleFetcher: async () => { throw new Error('Network unavailable.'); },
+  });
+  await app.listen();
+  context.after(async () => { await app.close(); database.close(); });
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const login = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'bookmark fallback password' }) });
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const response = await fetch(`${base}/api/bookmarks`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ url: 'https://makerworld.com/en/models/2571932-design-lamp', tags: ['design'] }),
+  });
+
+  assert.equal(response.status, 201);
+  const bookmark = await response.json();
+  assert.equal(bookmark.url, 'https://makerworld.com/en/models/2571932-design-lamp');
+  assert.equal(bookmark.title, 'makerworld.com');
+  assert.deepEqual(bookmark.tags, ['design']);
+});
