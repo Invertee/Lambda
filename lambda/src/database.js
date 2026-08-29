@@ -318,6 +318,7 @@ export class SnippetDatabase {
       throw error;
     }
     const replacement = { id: current.id, code: current.code, type, content };
+    if (type === 'csv') replacement.name = String(changes.name ?? current.name ?? 'CSV table').trim().slice(0, 200) || 'CSV table';
     if (type === 'code') replacement.language = String(changes.language ?? current.language ?? 'powershell').slice(0, 40);
 
     const note = this.getNote(target.noteId);

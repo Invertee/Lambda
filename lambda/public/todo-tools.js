@@ -434,6 +434,13 @@ function subtasksFromCard(card) {
   })).filter((subtask) => subtask.title);
 }
 
+function appendNewSubtask(card) {
+  const container = $('.todo-subtasks', card);
+  const row = subtaskRow({ id: crypto.randomUUID(), title: '', completed: false });
+  container.append(row);
+  $('[data-subtask-title]', row).focus();
+}
+
 async function patchTodo(id, changes) {
   const updated = await api(`todos/${id}`, { method: 'PATCH', body: JSON.stringify(changes) });
   const index = state.todos.findIndex((todo) => todo.id === id);
@@ -503,6 +510,25 @@ async function handleTodoChange(event) {
   }
 }
 
+async function handleTodoKeydown(event) {
+  if (event.key !== 'Enter' || event.isComposing || !event.target.matches('[data-subtask-title]')) return;
+
+  const card = event.target.closest('[data-todo-id]');
+  if (!card || !event.target.value.trim()) return;
+
+  event.preventDefault();
+  const id = card.dataset.todoId;
+  try {
+    await patchTodo(id, { subtasks: subtasksFromCard(card) });
+    const updatedCard = $$('.todo-card[data-todo-id]', $('#todos-view')).find((item) => item.dataset.todoId === id);
+    if (updatedCard) appendNewSubtask(updatedCard);
+  } catch (error) {
+    window.alert(error.message || 'Subtask could not be updated.');
+    await refreshActiveTodos();
+    if (state.completedLoaded) await refreshCompletedTodos();
+  }
+}
+
 async function handleTodoClick(event) {
   const dueButton = event.target.closest('[data-due-choice]');
   if (dueButton) {
@@ -526,10 +552,7 @@ async function handleTodoClick(event) {
   const id = card?.dataset.todoId;
 
   if (event.target.closest('[data-add-subtask]') && card) {
-    const container = $('.todo-subtasks', card);
-    const row = subtaskRow({ id: crypto.randomUUID(), title: '', completed: false });
-    container.append(row);
-    $('[data-subtask-title]', row).focus();
+    appendNewSubtask(card);
     return;
   }
 
@@ -647,6 +670,7 @@ function wire() {
   });
   $('#todo-create-form').addEventListener('submit', createTodo);
   $('#todos-view').addEventListener('change', handleTodoChange);
+  $('#todos-view').addEventListener('keydown', handleTodoKeydown);
   $('#todos-view').addEventListener('click', handleTodoClick);
   $('#todos-view').addEventListener('pointerdown', enableTodoDrag);
   $('#todos-view').addEventListener('dragstart', handleTodoDragStart);

@@ -12,12 +12,13 @@ test('assigns stable unique five-character codes and updates blocks directly', (
     tags: [],
     blocks: [
       { id: 'first', type: 'text', content: 'before' },
-      { id: 'second', type: 'csv', content: 'Name,Value\nAlpha,1' },
+      { id: 'second', type: 'csv', name: 'Sales data', content: 'Name,Value\nAlpha,1' },
     ],
   }));
 
   assert.match(note.blocks[0].code, /^[A-Z0-9]{5}$/);
   assert.match(note.blocks[1].code, /^[A-Z0-9]{5}$/);
+  assert.equal(note.blocks[1].name, 'Sales data');
   assert.notEqual(note.blocks[0].code, note.blocks[1].code);
 
   const code = note.blocks[0].code;
@@ -25,7 +26,9 @@ test('assigns stable unique five-character codes and updates blocks directly', (
   assert.equal(updated.block.content, 'after');
   assert.equal(updated.block.code, code);
   assert.equal(database.getNote(note.id).blocks[0].code, code);
-  assert.equal(database.listVersions(note.id).length, 1);
+  const csvUpdated = database.updateBlock(note.blocks[1].code, { content: 'Name,Value\nBeta,2' });
+  assert.equal(csvUpdated.block.name, 'Sales data');
+  assert.equal(database.listVersions(note.id).length, 2);
 
   assert.equal(database.softDelete(note.id), true);
   assert.equal(database.getBlock(code), null);
@@ -86,8 +89,8 @@ test('REST block API accepts JSON and raw CSV and serves the enhanced web shell'
   assert.equal(fetched.block.content, 'Name,Status\nSpooler,Running');
 
   const shell = await fetch(base).then((response) => response.text());
-  assert.match(shell, /block-tools\.css\?v=1\.3\.7/);
-  assert.match(shell, /block-tools\.js\?v=1\.3\.7/);
-  assert.match(shell, /todo-tools\.css\?v=1\.3\.7/);
+  assert.match(shell, /block-tools\.css\?v=1\.3\.8/);
+  assert.match(shell, /block-tools\.js\?v=1\.3\.10/);
+  assert.match(shell, /todo-tools\.css\?v=1\.3\.8/);
   assert.match(shell, /todo-tools\.js\?v=1\.3\.7/);
 });

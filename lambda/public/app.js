@@ -54,6 +54,7 @@ let saveInFlight = null;
 let editGeneration = 0;
 let savedGeneration = 0;
 let draggedBlockId = null;
+const codeCopyTimers = new WeakMap();
 let confirmResolver = null;
 let searchGeneration = 0;
 
@@ -620,6 +621,47 @@ function blockControl(role, title, icon, extra = '') {
   return button;
 }
 
+function copyControl(title) {
+  const button = blockControl('copy', title, icons.copy, 'copy-control');
+  const label = document.createElement('span');
+  label.dataset.copyLabel = '';
+  label.textContent = 'Copy';
+  button.append(label);
+  return button;
+}
+
+function setCopyState(button, copied) {
+  const label = button.querySelector('[data-copy-label]') || button.lastChild;
+  if (!label) return;
+  label.textContent = copied ? 'Copied' : 'Copy';
+  if (copied) setTimeout(() => { if (button.isConnected) setCopyState(button, false); }, 1300);
+}
+
+async function copyImage(block) {
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') throw new Error('Image clipboard access is unavailable.');
+  if (!block.content) throw new Error('There is no image to copy.');
+  const response = await fetch(block.content);
+  const blob = await response.blob();
+  let clipboardBlob = blob;
+  if (blob.type !== 'image/png') {
+    const bitmap = await createImageBitmap(blob);
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    canvas.getContext('2d').drawImage(bitmap, 0, 0);
+    bitmap.close();
+    clipboardBlob = await new Promise((resolve, reject) => {
+      canvas.toBlob((value) => value ? resolve(value) : reject(new Error('Could not prepare image.')), 'image/png');
+    });
+  }
+  await navigator.clipboard.write([new ClipboardItem({ 'image/png': clipboardBlob })]);
+}
+
+async function copyCodeCommand(block) {
+  if (!block.code) throw new Error('Save this block before copying its PowerShell command.');
+  await navigator.clipboard.writeText(`Get-LambdaBlock -Code ${block.code} | Select-Object block`);
+}
+
 function autoResize(textarea) {
   textarea.style.height = 'auto';
   textarea.style.height = `${Math.max(textarea.scrollHeight, textarea.classList.contains('code-content') ? 104 : 49)}px`;
@@ -640,6 +682,9 @@ function renderBlocks({ focusId = null } = {}) {
       blockControl('drag', 'Drag to reorder', icons.grip, 'drag-handle'),
       blockControl('remove', 'Remove block', icons.trash, 'remove'),
     );
+
+    const copyLabels = { text: 'Copy text', heading: 'Copy heading', image: 'Copy image' };
+    if (copyLabels[block.type]) controls.prepend(copyControl(copyLabels[block.type]));
 
     if (block.type === 'text') {
       const input = document.createElement('textarea');
@@ -663,7 +708,6 @@ function renderBlocks({ focusId = null } = {}) {
     if (block.type === 'code') {
       const toolbar = document.createElement('div');
       toolbar.className = 'code-toolbar';
-      toolbar.innerHTML = '<span class="code-dots"><i></i><i></i><i></i></span>';
       const language = document.createElement('select');
       language.className = 'language-input';
       language.dataset.role = 'language';
@@ -681,8 +725,7 @@ function renderBlocks({ focusId = null } = {}) {
         language.append(option);
       }
       language.value = selectedLanguage;
-      const copyButton = blockControl('copy', 'Copy code', icons.copy, 'copy-control');
-      copyButton.append(document.createTextNode('Copy'));
+      const copyButton = copyControl('Copy code');
       const downloadButton = blockControl('download-code', 'Download code', icons.download, 'download-control');
       controls.prepend(copyButton, downloadButton);
       toolbar.append(language, controls);
@@ -803,6 +846,7 @@ async function saveNow() {
 function newBlock(type, content = '') {
   const base = { id: uuid(), type, content };
   if (type === 'code') return { ...base, language: 'powershell' };
+  if (type === 'csv') return { ...base, name: 'CSV table' };
   if (type === 'heading') return { ...base, level: 2 };
   if (type === 'image') return { ...base, alt: '' };
   return base;
@@ -1475,7 +1519,7 @@ function wireEvents() {
     const block = state.currentNote.blocks.find((item) => item.id === card.dataset.blockId);
     if (!block) return;
     const role = event.target.dataset.role;
-    if (['content', 'language', 'alt'].includes(role)) block[role] = event.target.value;
+    if (['content', 'language', 'alt', 'name'].includes(role)) block[role] = event.target.value;
     if (event.target.matches('textarea')) autoResize(event.target);
     markDirty();
   });
@@ -1503,12 +1547,39 @@ function wireEvents() {
     }
     if (button.dataset.role === 'copy') {
       const block = state.currentNote.blocks.find((item) => item.id === id);
+      if (block.type === 'code') {
+        const pending = codeCopyTimers.get(button);
+        if (event.detail > 1) {
+          if (pending) {
+            clearTimeout(pending);
+            codeCopyTimers.delete(button);
+          }
+          try {
+            await copyCodeCommand(block);
+            setCopyState(button, true);
+          } catch (error) {
+            toast(error.message || 'Could not access the clipboard.', 'error');
+          }
+          return;
+        }
+        const timer = setTimeout(async () => {
+          codeCopyTimers.delete(button);
+          try {
+            await navigator.clipboard.writeText(block.content || '');
+            setCopyState(button, true);
+          } catch {
+            toast('Could not access the clipboard.', 'error');
+          }
+        }, 250);
+        codeCopyTimers.set(button, timer);
+        return;
+      }
       try {
-        await navigator.clipboard.writeText(block.content);
-        button.lastChild.textContent = 'Copied';
-        setTimeout(() => { if (button.isConnected) button.lastChild.textContent = 'Copy'; }, 1300);
+        if (block.type === 'image') await copyImage(block);
+        else await navigator.clipboard.writeText(block.content || '');
+        setCopyState(button, true);
       } catch {
-        toast('Could not access the clipboard.', 'error');
+        toast(block.type === 'image' ? 'Could not copy the image.' : 'Could not access the clipboard.', 'error');
       }
     }
     if (button.dataset.role === 'download-code') {

@@ -2,6 +2,14 @@ const APP_BASE = new URL('.', import.meta.url);
 const blockMap = new Map();
 let pendingCsv = false;
 let refreshTimer = null;
+const controlIcons = {
+  copy: '<svg viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
+  download: '<svg viewBox="0 0 24 24"><path d="M12 4v11m-4-4 4 4 4-4M5 20h14"/></svg>',
+  up: '<svg viewBox="0 0 24 24"><path d="m7 14 5-5 5 5"/></svg>',
+  down: '<svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>',
+  grip: '<svg viewBox="0 0 24 24"><circle cx="9" cy="7" r=".7"/><circle cx="15" cy="7" r=".7"/><circle cx="9" cy="12" r=".7"/><circle cx="15" cy="12" r=".7"/><circle cx="9" cy="17" r=".7"/><circle cx="15" cy="17" r=".7"/></svg>',
+  remove: '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"/></svg>',
+};
 
 function apiUrl(path) {
   return new URL(`api/${path.replace(/^\//, '')}`, APP_BASE);
@@ -51,15 +59,15 @@ function serializeCsv(rows) {
   return rows.map((row) => row.map(escapeCsv).join(',')).join('\r\n');
 }
 
-function safeFilename(value) {
-  return String(value || 'lambda-table').trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').replace(/[. ]+$/g, '') || 'lambda-table';
+function safeFilename(value, fallback = 'lambda-table') {
+  return String(value || fallback).trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').replace(/[. ]+$/g, '') || fallback;
 }
 
-function downloadCsv(content) {
+function downloadCsv(content, filename) {
   const url = URL.createObjectURL(new Blob([content], { type: 'text/csv;charset=utf-8' }));
   const link = document.createElement('a');
   link.href = url;
-  link.download = `${safeFilename(document.querySelector('#note-title')?.value || 'lambda-table')}.csv`;
+  link.download = `${safeFilename(filename, 'lambda-table')}.csv`;
   document.body.append(link);
   link.click();
   link.remove();
@@ -72,7 +80,7 @@ function offline() {
 
 function updateCsvDisabledState(card) {
   const disabled = offline();
-  card.querySelectorAll('.csv-cell-input, .csv-header-name, [data-csv-edit], .csv-generated-controls button').forEach((element) => {
+  card.querySelectorAll('.csv-cell-input, .csv-header-name, .csv-table-name, [data-csv-edit], .csv-generated-controls button').forEach((element) => {
     element.disabled = disabled;
   });
 }
@@ -88,8 +96,6 @@ function syncSource(card, rows) {
 
 function normalizeTableState(state, rows) {
   const width = rows[0]?.length || 1;
-  while (state.filters.length < width) state.filters.push('');
-  state.filters.length = width;
   if (state.sortColumn !== null && state.sortColumn >= width) {
     state.sortColumn = null;
     state.sortDirection = 0;
@@ -109,17 +115,35 @@ function compareValues(left, right) {
 
 function visibleRows(rows, state) {
   const globalFilter = state.globalFilter.trim().toLocaleLowerCase();
-  const filters = state.filters.map((value) => value.trim().toLocaleLowerCase());
   const values = rows.slice(1).map((row, index) => ({ row, sourceIndex: index + 1 }));
   const filtered = values.filter(({ row }) => {
     if (globalFilter && !row.some((value) => String(value ?? '').toLocaleLowerCase().includes(globalFilter))) return false;
-    return filters.every((filter, columnIndex) => !filter || String(row[columnIndex] ?? '').toLocaleLowerCase().includes(filter));
+    return true;
   });
   if (state.sortColumn === null || !state.sortDirection) return filtered;
   return filtered.sort((left, right) => {
     const compared = compareValues(left.row[state.sortColumn], right.row[state.sortColumn]);
     return compared ? compared * state.sortDirection : left.sourceIndex - right.sourceIndex;
   });
+}
+
+function moveCsvCell(input, key) {
+  const cell = input.closest('td');
+  const row = input.closest('tr');
+  if (!cell || !row) return false;
+
+  let target;
+  if (key === 'ArrowUp' || key === 'ArrowDown') {
+    const targetRow = key === 'ArrowUp' ? row.previousElementSibling : row.nextElementSibling;
+    target = targetRow?.cells[cell.cellIndex]?.querySelector('.csv-cell-input');
+  } else {
+    const targetCell = key === 'ArrowLeft' ? cell.previousElementSibling : cell.nextElementSibling;
+    target = targetCell?.querySelector('.csv-cell-input');
+  }
+  if (!target) return false;
+
+  target.focus();
+  return true;
 }
 
 function updateSortButtons(card, state) {
@@ -157,6 +181,11 @@ function renderTableBody(card, rows, state) {
       input.value = value;
       input.disabled = offline();
       input.setAttribute('aria-label', `Data row ${sourceIndex}, column ${columnIndex + 1}`);
+      input.addEventListener('keydown', (event) => {
+        if (event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+        if (!moveCsvCell(input, event.key)) return;
+        event.preventDefault();
+      });
       input.addEventListener('input', (event) => {
         event.stopPropagation();
         rows[sourceIndex][columnIndex] = input.value;
@@ -216,20 +245,8 @@ function renderTable(card, rows, state) {
       updateSortButtons(card, state);
     });
 
-    const filter = document.createElement('input');
-    filter.type = 'search';
-    filter.className = 'csv-column-filter';
-    filter.placeholder = 'Filter…';
-    filter.value = state.filters[columnIndex] || '';
-    filter.setAttribute('aria-label', `Filter column ${columnIndex + 1}`);
-    filter.addEventListener('input', (event) => {
-      event.stopPropagation();
-      state.filters[columnIndex] = filter.value;
-      renderTableBody(card, rows, state);
-    });
-
     top.append(name, sort);
-    cell.append(top, filter);
+    cell.append(top);
     headerRow.append(cell);
   });
 
@@ -252,14 +269,22 @@ function editingButton(label, action) {
   return button;
 }
 
-function actionButton(role, label, title) {
+function actionButton(role, label, title, icon = '') {
   const button = document.createElement('button');
   button.type = 'button';
-  button.className = `block-control${role === 'remove' ? ' remove' : ''}`;
+  button.className = `block-control${role === 'remove' ? ' remove' : ''}${role === 'copy' ? ' copy-control' : ''}${role === 'download-csv' ? ' download-control' : ''}`;
   button.dataset.role = role;
   button.title = title;
   button.setAttribute('aria-label', title);
-  button.textContent = label;
+  if (icon) {
+    button.innerHTML = icon;
+    if (role === 'copy') {
+      const copyLabel = document.createElement('span');
+      copyLabel.dataset.copyLabel = '';
+      copyLabel.textContent = label;
+      button.append(copyLabel);
+    }
+  } else button.textContent = label;
   return button;
 }
 
@@ -268,13 +293,14 @@ function ensureBlockControls(card) {
   if (controls) return controls;
   controls = document.createElement('div');
   controls.className = 'block-controls csv-generated-controls';
-  const drag = actionButton('drag', '⠿', 'Drag to reorder');
+  const drag = actionButton('drag', '', 'Drag to reorder', controlIcons.grip);
   drag.classList.add('drag-handle');
   controls.append(
-    actionButton('move-up', '↑', 'Move block up'),
-    actionButton('move-down', '↓', 'Move block down'),
+    actionButton('copy', 'Copy', 'Copy table', controlIcons.copy),
+    actionButton('move-up', '', 'Move block up', controlIcons.up),
+    actionButton('move-down', '', 'Move block down', controlIcons.down),
     drag,
-    actionButton('remove', '×', 'Remove block'),
+    actionButton('remove', '', 'Remove block', controlIcons.remove),
   );
   card.append(controls);
   return controls;
@@ -291,16 +317,28 @@ function enhanceCsv(card, block) {
   const tableState = {
     sortColumn: null,
     sortDirection: 0,
-    filters: Array(rows[0]?.length || 1).fill(''),
     globalFilter: '',
   };
   const controls = ensureBlockControls(card);
 
+  const downloadControl = actionButton('download-csv', '', 'Download CSV', controlIcons.download);
+  const tableName = document.createElement('input');
+  tableName.type = 'text';
+  tableName.className = 'csv-table-name';
+  tableName.dataset.role = 'name';
+  tableName.maxLength = 200;
+  tableName.value = block.name || 'CSV table';
+  tableName.placeholder = 'Table name';
+  tableName.setAttribute('aria-label', 'Table name');
+  tableName.disabled = offline();
+  tableName.addEventListener('input', () => {
+    block.name = tableName.value;
+  });
+  downloadControl.addEventListener('click', () => downloadCsv(serializeCsv(rows), tableName.value));
+  controls.insertBefore(downloadControl, controls.children[1] || null);
+
   const toolbar = document.createElement('div');
   toolbar.className = 'csv-toolbar';
-  const label = document.createElement('strong');
-  label.textContent = 'CSV table';
-
   const globalFilter = document.createElement('input');
   globalFilter.type = 'search';
   globalFilter.className = 'csv-global-filter';
@@ -314,12 +352,10 @@ function enhanceCsv(card, block) {
   const clearFilters = document.createElement('button');
   clearFilters.type = 'button';
   clearFilters.className = 'secondary-button';
-  clearFilters.textContent = 'Clear filters';
+  clearFilters.textContent = 'Clear filter';
   clearFilters.addEventListener('click', () => {
     tableState.globalFilter = '';
-    tableState.filters.fill('');
     globalFilter.value = '';
-    card.querySelectorAll('.csv-column-filter').forEach((input) => { input.value = ''; });
     renderTableBody(card, rows, tableState);
   });
 
@@ -331,7 +367,6 @@ function enhanceCsv(card, block) {
 
   const addColumn = editingButton('Add column', () => {
     rows.forEach((row) => row.push(''));
-    tableState.filters.push('');
     renderTable(card, rows, tableState);
     syncSource(card, rows);
   });
@@ -351,13 +386,7 @@ function enhanceCsv(card, block) {
     syncSource(card, rows);
   });
 
-  const download = document.createElement('button');
-  download.type = 'button';
-  download.className = 'secondary-button';
-  download.textContent = 'Download CSV';
-  download.addEventListener('click', () => downloadCsv(serializeCsv(rows)));
-
-  toolbar.append(label, globalFilter, clearFilters, addRow, addColumn, removeRow, removeColumn, download);
+  toolbar.append(tableName, globalFilter, clearFilters, addRow, addColumn, removeRow, removeColumn);
 
   const tableHolder = document.createElement('div');
   tableHolder.className = 'csv-table-wrap';
@@ -384,13 +413,29 @@ function addCodeBadge(card, block) {
   badge.dataset.blockCode = block.code;
   badge.title = 'Copy block code';
   badge.textContent = block.code;
-  badge.addEventListener('click', async () => {
+  let pendingCopy = null;
+  let statusTimer = null;
+  const original = block.code;
+  const copyValue = async (value, status) => {
     try {
-      await navigator.clipboard.writeText(block.code);
-      const original = badge.textContent;
-      badge.textContent = 'Copied';
-      setTimeout(() => { if (badge.isConnected) badge.textContent = original; }, 900);
+      await navigator.clipboard.writeText(value);
+      badge.textContent = status;
+      clearTimeout(statusTimer);
+      statusTimer = setTimeout(() => { if (badge.isConnected) badge.textContent = original; }, 900);
     } catch {}
+  };
+  badge.addEventListener('click', (event) => {
+    if (event.detail > 1) {
+      clearTimeout(pendingCopy);
+      pendingCopy = null;
+      copyValue(`Get-LambdaBlock -Code ${block.code} | Select-Object block`, 'PS copied');
+      return;
+    }
+    clearTimeout(pendingCopy);
+    pendingCopy = setTimeout(() => {
+      pendingCopy = null;
+      copyValue(block.code, 'Copied');
+    }, 300);
   });
   card.prepend(badge);
 }

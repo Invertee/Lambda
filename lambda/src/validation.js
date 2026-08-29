@@ -160,7 +160,12 @@ export function validateNote(input, { partial = false } = {}) {
     if (type === 'code') {
       return withCode({ id, type, content, language: text(String(block.language || 'powershell'), 40, 'Language') }, code);
     }
-    return withCode({ id, type, content }, code);
+    return withCode({
+      id,
+      type,
+      content,
+      ...(type === 'csv' ? { name: text(String(block.name ?? 'CSV table'), 200) || 'CSV table' } : {}),
+    }, code);
   });
 
   return result;
