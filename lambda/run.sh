@@ -8,4 +8,4 @@ export DB_PATH="/config/snippet.db"
 export HOST="0.0.0.0"
 export PORT="8099"
 
-exec node /app/src/server.js
+exec node /app/src/start.js
