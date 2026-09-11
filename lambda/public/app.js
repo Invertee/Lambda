@@ -946,6 +946,26 @@ async function fileToDataUrl(file) {
   return canvas.toDataURL(file.type === 'image/png' ? 'image/png' : 'image/webp', .86);
 }
 
+async function addImageFiles(files, { afterBlockId = null } = {}) {
+  const noteId = state.currentNote?.id;
+  if (!noteId || state.offline || !files.length) return;
+
+  const blocks = await Promise.all(files.map(async (file) => {
+    const block = newBlock('image', await fileToDataUrl(file));
+    block.alt = (file.name || '').replace(/\.[^.]+$/, '');
+    return block;
+  }));
+
+  if (state.currentNote?.id !== noteId) return;
+  const targetIndex = afterBlockId
+    ? state.currentNote.blocks.findIndex((block) => block.id === afterBlockId)
+    : -1;
+  const insertionIndex = targetIndex >= 0 ? targetIndex + 1 : state.currentNote.blocks.length;
+  state.currentNote.blocks.splice(insertionIndex, 0, ...blocks);
+  renderBlocks();
+  markDirty();
+}
+
 function formatBytes(value) {
   const bytes = Number(value) || 0;
   if (bytes < 1024) return `${bytes} B`;
@@ -1533,6 +1553,23 @@ function wireEvents() {
     }
   });
 
+  $('#note-editor').addEventListener('paste', async (event) => {
+    if (!state.currentNote || state.offline) return;
+    const images = Array.from(event.clipboardData?.items || [])
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    if (!images.length) return;
+
+    event.preventDefault();
+    const afterBlockId = event.target.closest?.('[data-block-id]')?.dataset.blockId || null;
+    try {
+      await addImageFiles(images, { afterBlockId });
+    } catch (error) {
+      toast(error.message || 'That image could not be pasted.', 'error');
+    }
+  });
+
   $('#blocks').addEventListener('click', async (event) => {
     const button = event.target.closest('[data-role]');
     const card = event.target.closest('[data-block-id]');
@@ -1633,11 +1670,7 @@ function wireEvents() {
     event.target.value = '';
     if (!file || !state.currentNote) return;
     try {
-      const block = newBlock('image', await fileToDataUrl(file));
-      block.alt = file.name.replace(/\.[^.]+$/, '');
-      state.currentNote.blocks.push(block);
-      renderBlocks();
-      markDirty();
+      await addImageFiles([file]);
     } catch (error) {
       toast(error.message || 'That image could not be added.', 'error');
     }
