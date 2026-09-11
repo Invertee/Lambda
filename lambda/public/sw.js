@@ -1,9 +1,9 @@
-const CACHE_NAME = 'lambda-shell-v23';
+const CACHE_NAME = 'lambda-shell-v24';
 const SHELL = [
   './',
   './index.html',
   './styles.css',
-  './app.js',
+  './app.js?v=24',
   './block-tools.css',
   './block-tools.js',
   './todo-tools.css',

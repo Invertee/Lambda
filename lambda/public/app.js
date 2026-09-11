@@ -1553,18 +1553,26 @@ function wireEvents() {
     }
   });
 
-  $('#note-editor').addEventListener('paste', async (event) => {
-    if (!state.currentNote || state.offline) return;
-    const images = Array.from(event.clipboardData?.items || [])
-      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+  document.addEventListener('paste', async (event) => {
+    const editor = $('#note-editor');
+    if (!state.currentNote || state.offline || editor.classList.contains('hidden') || document.querySelector('dialog[open]')) return;
+    if (!editor.contains(event.target) && event.target.matches?.('input, textarea, [contenteditable="true"]')) return;
+
+    const clipboard = event.clipboardData;
+    const itemImages = Array.from(clipboard?.items || [])
+      .filter((item) => item.kind === 'file')
       .map((item) => item.getAsFile())
-      .filter(Boolean);
+      .filter((file) => file?.type.startsWith('image/'));
+    const images = itemImages.length
+      ? itemImages
+      : Array.from(clipboard?.files || []).filter((file) => file.type.startsWith('image/'));
     if (!images.length) return;
 
     event.preventDefault();
     const afterBlockId = event.target.closest?.('[data-block-id]')?.dataset.blockId || null;
     try {
       await addImageFiles(images, { afterBlockId });
+      toast(images.length === 1 ? 'Image pasted.' : `${images.length} images pasted.`);
     } catch (error) {
       toast(error.message || 'That image could not be pasted.', 'error');
     }
